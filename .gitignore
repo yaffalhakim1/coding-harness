@@ -1,0 +1,16 @@
+target/
+*.pdb
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Secrets
+.env
+*.key
+
+# Generated run artifacts
+trajectories/*.json
+results/
+bench-work/
+ablate-work/

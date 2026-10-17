@@ -1,0 +1,30 @@
+# Context strategy: T4 (elision → summarization)
+context_window = 128000
+context_strategy = "T4"
+planning_enabled = true
+action_space = "predefined"
+max_turns = 50
+timeout_secs = 600
+# Optional: hard cap on total tokens per session (guards against cost runaway).
+# token_budget = 2000000
+
+# Context thresholds from the paper (§3.1): elide at 60%, summarize at 85%,
+# keep the last 30% of the window verbatim (at least 2 turns).
+[thresholds]
+soft_ratio = 0.6
+hard_ratio = 0.85
+recent_ratio = 0.3
+recent_turns = 2
+
+[model]
+provider = "openai"
+model_id = "gpt-4o"
+api_key_env = "OPENAI_API_KEY"
+temperature = 0.0
+max_tokens = 4096
+timeout_secs = 120
+max_retries = 4
+# Prices are required for cost reporting; omit either and cost is reported as
+# unknown rather than guessed. Values below are gpt-4o list prices (USD / 1M).
+input_cost_per_mtok = 2.50
+output_cost_per_mtok = 10.00

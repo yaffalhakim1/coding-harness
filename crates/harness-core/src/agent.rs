@@ -1,0 +1,322 @@
+//! Agent execution loop.
+//!
+//! Paper §2: "The harness follows a ReAct loop, with each turn comprising a
+//! reasoning step, an action, and an observation."
+//!
+//! Responsibilities kept here:
+//! - turn budgeting, wall-clock timeout, and session token cap
+//! - terminal detection (bounded narration, not "first text turn wins")
+//! - tool execution and observation feedback
+//! - stuck detection (paper §2.4)
+//!
+//! Everything else delegates: context to `harness-context`, planning to
+//! `harness-planning`, tools to `harness-actions`, verification to
+//! [`crate::evaluator`].
+
+use std::sync::Arc;
+use std::time::Instant;
+
+use anyhow::{Context, Result};
+use tracing::{debug, error, info, warn};
+
+use harness_actions::registry::ActionRegistry;
+use harness_context::factory::begin_turn;
+use harness_context::{ContextState, ContextStrategy, ContextTier, Tokenizer};
+use harness_models::provider::LLMProvider;
+use harness_models::types::ChatMessage;
+use harness_planning::{DefaultPlanner, PlanningStrategy};
+
+use crate::evaluator::{evaluate_task, run_setup};
+use crate::prompts::{system_prompt, task_prompt};
+use crate::session::{Session, SessionConfig, SessionOutcome};
+use crate::stuck::{StuckDetector, StuckSignal};
+use crate::tools::execute_tool_calls;
+use crate::turn::Turn;
+use crate::types::Task;
+
+/// Everything the loop needs from outside.
+pub struct AgentDeps<'a> {
+    pub llm: Arc<dyn LLMProvider>,
+    pub actions: &'a dyn ActionRegistry,
+    pub context: &'a dyn ContextStrategy,
+    pub tokenizer: &'a Tokenizer,
+    pub planner: Option<&'a dyn PlanningStrategy>,
+    /// Shared plan state for the `update_plan` tool. When `None`, planning is
+    /// disabled and the tool is not registered.
+    pub plan_state: Option<harness_actions::PlanState>,
+}
+
+/// Run the agent loop for a single task.
+pub async fn run_agent_loop(
+    task: &Task,
+    config: &SessionConfig,
+    deps: AgentDeps<'_>,
+) -> Result<Session> {
+    let mut session = Session::new(task.clone(), config.clone());
+
+    info!(
+        session_id = %session.id,
+        task_id = %task.id,
+        context_window = config.context_window,
+        context_strategy = %config.context_strategy,
+        planning_enabled = config.planning_enabled,
+        action_space = %config.action_space,
+        "Starting agent session"
+    );
+
+    if let Err(reason) = run_setup(task, deps.actions).await {
+        error!(reason = %reason, "Task setup failed");
+        session.complete(SessionOutcome::Error(reason));
+        return Ok(session);
+    }
+
+    let mut state = build_initial_state(task, config, &deps, &mut session).await?;
+    let tools = deps.actions.get_tool_definitions();
+    let start = Instant::now();
+    let mut stuck = StuckDetector::default();
+    let mut narration_turns = 0u32;
+
+    loop {
+        if let Some(outcome) = guard(
+            config,
+            &session,
+            start.elapsed().as_secs(),
+            state.total_tokens(),
+        ) {
+            session.complete(outcome);
+            break;
+        }
+
+        session.observe_context(state.total_tokens());
+
+        // Paper §2.1: "Subsequent turns append the plan to the model input
+        // without storing it in conversation history." Re-inject the current
+        // plan (if any) before building the window.
+        if let Some(plan_state) = &deps.plan_state {
+            if let Some(plan) = plan_state.get() {
+                inject_current_plan(&mut state, &deps, &plan);
+            }
+        }
+
+        let messages = state.build_window();
+        let input_tokens = state.total_tokens();
+        let turn_start = Instant::now();
+
+        let response = match deps.llm.chat(&messages, &tools, &config.model).await {
+            Ok(resp) => resp,
+            Err(e) => {
+                error!(error = %e, "LLM API call failed");
+                session.complete(SessionOutcome::ApiError(e.to_string()));
+                break;
+            }
+        };
+
+        let mut turn = Turn::new(
+            session.turn_count() as u32,
+            messages,
+            input_tokens,
+            response,
+        );
+        info!(
+            turn = turn.turn_number,
+            prompt_tokens = turn.response.usage.prompt_tokens,
+            completion_tokens = turn.response.usage.completion_tokens,
+            tool_calls = turn.tool_calls.len(),
+            stop_reason = ?turn.response.stop_reason,
+            "Turn completed"
+        );
+
+        if turn.tool_calls.is_empty() {
+            // No action means the model is done (paper §2: the loop ends when
+            // there is no action). A response that is neither prose nor a tool
+            // call is degenerate; tolerate a few of those, then stop.
+            let has_content = !turn.response.message.text().trim().is_empty();
+            narration_turns = if has_content { 0 } else { narration_turns + 1 };
+            let limit = config.max_narration_turns.max(1);
+
+            if has_content || narration_turns >= limit {
+                turn.set_duration(turn_start.elapsed().as_millis() as u64);
+                session.record_turn(turn);
+                session.complete(finish(task, deps.actions).await);
+                break;
+            }
+
+            debug!(narration_turns, "Empty response; requesting an action");
+            append_narration_nudge(&mut state, &deps, "");
+            turn.set_duration(turn_start.elapsed().as_millis() as u64);
+            session.record_turn(turn);
+            continue;
+        }
+
+        narration_turns = 0;
+        begin_turn(&mut state);
+        state.add_message(
+            turn.response.message.clone(),
+            deps.tokenizer.count_message_tokens(&turn.response.message),
+        );
+
+        let signal = execute_tool_calls(
+            &mut turn,
+            deps.actions,
+            &mut state,
+            deps.tokenizer,
+            &mut stuck,
+        )
+        .await;
+        begin_turn(&mut state);
+
+        turn.set_duration(turn_start.elapsed().as_millis() as u64);
+        session.record_turn(turn);
+
+        if let StuckSignal::Terminate { tool, repeats } = signal {
+            warn!(tool = %tool, repeats, "Stuck: identical failing calls");
+            session.complete(SessionOutcome::Stuck { tool, repeats });
+            break;
+        }
+
+        let capacity = config.context_window;
+        if let Err(e) = deps.context.manage(&mut state, capacity).await {
+            warn!(error = %e, "Context management failed");
+            if config.context_strategy == ContextTier::T0 {
+                session.complete(SessionOutcome::ContextOverflow);
+                break;
+            }
+        }
+        session.observe_context(state.total_tokens());
+    }
+
+    session.summarize_calls = summarize_calls(deps.context);
+    log_completion(&session);
+    Ok(session)
+}
+
+/// Guard rails checked before each model call.
+fn guard(
+    config: &SessionConfig,
+    session: &Session,
+    elapsed_secs: u64,
+    context_tokens: usize,
+) -> Option<SessionOutcome> {
+    if session.turn_count() as u32 >= config.max_turns {
+        warn!(turns = session.turn_count(), "Turn limit reached");
+        return Some(SessionOutcome::TurnLimitReached);
+    }
+    if elapsed_secs > config.timeout_secs {
+        warn!(elapsed_secs, "Timeout reached");
+        return Some(SessionOutcome::Timeout);
+    }
+    if let Some(budget) = config.token_budget {
+        if session.total_usage.total_tokens >= budget {
+            warn!(
+                used = session.total_usage.total_tokens,
+                budget, "Token budget exhausted"
+            );
+            return Some(SessionOutcome::TurnLimitReached);
+        }
+    }
+    if context_tokens > config.context_window && config.context_strategy == ContextTier::T0 {
+        // T0 does not manage context; sending it would fail at the API anyway.
+        return Some(SessionOutcome::ContextOverflow);
+    }
+    None
+}
+
+/// Build the initial context and optionally generate a plan.
+async fn build_initial_state(
+    task: &Task,
+    config: &SessionConfig,
+    deps: &AgentDeps<'_>,
+    session: &mut Session,
+) -> Result<ContextState> {
+    let system = system_prompt(config.action_space, config.planning_enabled);
+    let user = task_prompt(&task.description, &task.test_commands);
+    let state = harness_context::new_state_with_preamble(deps.tokenizer, &system, &user)?;
+
+    if !config.planning_enabled {
+        return Ok(state);
+    }
+
+    let default_planner = DefaultPlanner::new();
+    let planner: &dyn PlanningStrategy = deps.planner.unwrap_or(&default_planner);
+    inject_plan(planner, task, config, deps, session, state).await
+}
+
+/// Generate a plan and inject it into the protected preamble.
+async fn inject_plan(
+    planner: &dyn PlanningStrategy,
+    task: &Task,
+    config: &SessionConfig,
+    deps: &AgentDeps<'_>,
+    session: &mut Session,
+    mut state: ContextState,
+) -> Result<ContextState> {
+    info!("Generating plan");
+    let plan = planner
+        .generate_plan(&task.description, deps.llm.as_ref(), &config.model)
+        .await
+        .context("planning failed")?;
+    let tokens = deps.tokenizer.count_tokens(&plan) + 16;
+    session.set_plan(plan.clone());
+    deps.context.inject_plan(&mut state, &plan, tokens);
+    debug!(plan_chars = plan.len(), "Plan generated");
+    Ok(state)
+}
+
+/// Append a nudge when the model narrated instead of acting.
+fn append_narration_nudge(state: &mut ContextState, deps: &AgentDeps<'_>, text: &str) {
+    let msg = ChatMessage::assistant(text.to_string());
+    let tokens = deps.tokenizer.count_message_tokens(&msg);
+    state.add_message(msg, tokens);
+
+    let nudge = ChatMessage::user(
+        "You did not call any tool. Continue the task by calling a tool now, or state that the task is complete.",
+    );
+    let nudge_tokens = deps.tokenizer.count_message_tokens(&nudge);
+    state.add_message(nudge, nudge_tokens);
+}
+
+/// Evaluate the task and map it onto an outcome.
+async fn finish(task: &Task, actions: &dyn ActionRegistry) -> SessionOutcome {
+    info!("Model stopped acting — evaluating result");
+    let result = evaluate_task(task, actions).await;
+    if !task.is_verifiable() {
+        return SessionOutcome::Unverified(result);
+    }
+    if result.passed {
+        SessionOutcome::Success(result)
+    } else {
+        SessionOutcome::Failure(result)
+    }
+}
+
+/// Inject the current plan into the context before each turn.
+///
+/// Paper §2.1 / Figure 17: the plan is supplied anew before each model call
+/// rather than appended to conversation history, so it stays current without
+/// accumulating duplicate copies.
+fn inject_current_plan(state: &mut ContextState, deps: &AgentDeps<'_>, plan: &str) {
+    let reminder = format!(
+        "<system-reminder>\nCurrent plan (update it via update_plan as you progress; keep exactly one task in_progress, and mark a task completed the moment it is actually done):\n{}\n</system-reminder>",
+        plan
+    );
+    let msg = ChatMessage::system(reminder);
+    let tokens = deps.tokenizer.count_message_tokens(&msg);
+    state.add_message(msg, tokens);
+}
+
+fn summarize_calls(strategy: &dyn ContextStrategy) -> usize {
+    strategy.summarize_calls()
+}
+
+fn log_completion(session: &Session) {
+    info!(
+        session_id = %session.id,
+        turns = session.turn_count(),
+        total_tokens = session.total_usage.total_tokens,
+        peak_context_tokens = session.peak_context_tokens,
+        cost_usd = ?session.cost_usd(),
+        duration_secs = session.elapsed_secs(),
+        outcome = ?session.outcome.as_ref().map(|o| o.label()),
+        "Session completed"
+    );
+}

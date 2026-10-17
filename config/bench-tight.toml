@@ -1,0 +1,24 @@
+# Tight-budget config used to reproduce the paper's context-management claim
+# (managed tiers survive windows that kill T0).
+context_window = 4000
+context_strategy = "T4"
+planning_enabled = false
+action_space = "predefined"
+max_turns = 40
+timeout_secs = 240
+
+[thresholds]
+soft_ratio = 0.6
+hard_ratio = 0.85
+recent_ratio = 0.3
+recent_turns = 2
+
+[model]
+provider = "kenari"
+model_id = "deepseek-v4-1-flash"
+api_base = "https://kenari.id/v1"
+api_key_env = "KENARI_API_KEY"
+temperature = 0.0
+max_tokens = 2048
+timeout_secs = 120
+max_retries = 3

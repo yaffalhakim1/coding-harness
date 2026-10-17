@@ -1,0 +1,30 @@
+# Config demonstrating provider failover.
+#
+# The primary route points at an unreachable port, so a run must fall through to
+# the working Kenari route. Used by `cargo run -- doctor --config config/failover-demo.toml --check-api`.
+context_window = 128000
+context_strategy = "T4"
+planning_enabled = false
+action_space = "predefined"
+max_turns = 10
+timeout_secs = 120
+
+[model]
+provider = "openai"
+model_id = "unreachable-primary"
+api_base = "http://127.0.0.1:9/v1"
+api_key_env = "FAILOVER_DEMO_KEY"
+temperature = 0.0
+max_tokens = 256
+timeout_secs = 5
+max_retries = 0
+
+[[model.fallbacks]]
+provider = "kenari"
+model_id = "deepseek-v4-1-flash"
+api_base = "https://kenari.id/v1"
+api_key_env = "KENARI_API_KEY"
+temperature = 0.0
+max_tokens = 256
+timeout_secs = 60
+max_retries = 1

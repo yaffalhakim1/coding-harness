@@ -1,0 +1,11 @@
+# Trajectories
+
+This directory contains session trajectory logs in JSON format.
+
+Each file is named `<session_id>.json` and contains:
+- Session metadata (task ID, config, model)
+- Turn-by-turn record (input/output tokens, tool calls, tool results)
+- Timing data
+- Outcome and cost
+
+These trajectories can be analyzed with `harness analyze --trajectory <session_id>`.
