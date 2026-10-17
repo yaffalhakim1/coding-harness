@@ -9,6 +9,7 @@
 //! whole turn: a `write_file` between two `read_file`s must still observe the
 //! first read's effect on file state, so order has to be preserved across it.
 
+use std::sync::Arc;
 use std::time::Instant;
 
 use futures::future::join_all;
@@ -34,16 +35,17 @@ pub async fn execute_tool_calls(
     state: &mut ContextState,
     tokenizer: &Tokenizer,
     stuck: &mut StuckDetector,
+    progress: Option<&Arc<dyn crate::progress::ProgressSink>>,
 ) -> StuckSignal {
     let mut strongest = StuckSignal::Continue { reminder: None };
     let calls = turn.tool_calls.clone();
 
     for batch in group_into_batches(&calls, actions) {
         let results = if batch.len() == 1 {
-            vec![run_one(batch[0], actions).await]
+            vec![run_one(batch[0], actions, progress).await]
         } else {
             // Adjacent read-only calls are independent, so fan them out.
-            join_all(batch.iter().map(|call| run_one(call, actions))).await
+            join_all(batch.iter().map(|call| run_one(call, actions, progress))).await
         };
 
         for (call, result) in batch.iter().zip(results) {
@@ -102,11 +104,21 @@ fn group_into_batches<'a>(
 }
 
 /// Execute one call and normalise the outcome into a [`ToolResult`].
-async fn run_one(call: &ToolCall, actions: &dyn ActionRegistry) -> ToolResult {
+async fn run_one(
+    call: &ToolCall,
+    actions: &dyn ActionRegistry,
+    progress: Option<&Arc<dyn crate::progress::ProgressSink>>,
+) -> ToolResult {
     let started = Instant::now();
     info!(tool = %call.name, args = %call.arguments, "Executing tool call");
+    if let Some(sink) = progress {
+        sink.emit(crate::progress::Progress::ToolStarted {
+            name: call.name.clone(),
+            arguments: call.arguments.to_string(),
+        });
+    }
 
-    match actions.execute(call).await {
+    let result = match actions.execute(call).await {
         Ok(output) => ToolResult {
             tool_call_id: call.id.clone(),
             tool_name: call.name.clone(),
@@ -126,7 +138,24 @@ async fn run_one(call: &ToolCall, actions: &dyn ActionRegistry) -> ToolResult {
                 duration_ms: started.elapsed().as_millis() as u64,
             }
         }
+    };
+
+    if let Some(sink) = progress {
+        let preview = result
+            .preview_text()
+            .lines()
+            .next()
+            .unwrap_or("")
+            .to_string();
+        sink.emit(crate::progress::Progress::ToolFinished {
+            name: call.name.clone(),
+            success: result.success,
+            duration_ms: result.duration_ms,
+            preview,
+        });
     }
+
+    result
 }
 
 /// A termination outranks a reminder, which outranks silence.
@@ -176,7 +205,8 @@ mod tests {
         let mut turn = turn_with(vec![call]);
         let mut stuck = StuckDetector::default();
 
-        let signal = execute_tool_calls(&mut turn, &registry, &mut state, &tok, &mut stuck).await;
+        let signal =
+            execute_tool_calls(&mut turn, &registry, &mut state, &tok, &mut stuck, None).await;
 
         assert!(matches!(signal, StuckSignal::Continue { reminder: None }));
         assert_eq!(state.messages.len(), 1);
@@ -202,7 +232,7 @@ mod tests {
         let mut turn = turn_with(vec![call]);
         let mut stuck = StuckDetector::default();
 
-        execute_tool_calls(&mut turn, &registry, &mut state, &tok, &mut stuck).await;
+        execute_tool_calls(&mut turn, &registry, &mut state, &tok, &mut stuck, None).await;
 
         assert!(!turn.tool_results[0].success);
         let observation = state.messages[0].message.text();
@@ -226,7 +256,8 @@ mod tests {
                 arguments: serde_json::json!({ "path": "missing.txt" }),
             };
             let mut turn = turn_with(vec![call]);
-            last = execute_tool_calls(&mut turn, &registry, &mut state, &tok, &mut stuck).await;
+            last =
+                execute_tool_calls(&mut turn, &registry, &mut state, &tok, &mut stuck, None).await;
         }
 
         assert!(
@@ -246,7 +277,7 @@ mod tests {
         };
         for _ in 0..2 {
             let mut turn = turn_with(vec![call.clone()]);
-            execute_tool_calls(&mut turn, &registry, &mut state, &tok, &mut stuck).await;
+            execute_tool_calls(&mut turn, &registry, &mut state, &tok, &mut stuck, None).await;
         }
         let has_reminder = state
             .messages
@@ -354,7 +385,7 @@ mod tests {
         ]);
         let mut stuck = StuckDetector::default();
 
-        execute_tool_calls(&mut turn, &registry, &mut state, &tok, &mut stuck).await;
+        execute_tool_calls(&mut turn, &registry, &mut state, &tok, &mut stuck, None).await;
 
         assert_eq!(turn.tool_results.len(), 2);
         assert!(turn.tool_results.iter().all(|r| r.success));
@@ -388,7 +419,7 @@ mod tests {
         ]);
         let mut stuck = StuckDetector::default();
 
-        execute_tool_calls(&mut turn, &registry, &mut state, &tok, &mut stuck).await;
+        execute_tool_calls(&mut turn, &registry, &mut state, &tok, &mut stuck, None).await;
 
         assert!(turn.tool_results[0].success);
         assert!(

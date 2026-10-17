@@ -10,6 +10,7 @@ pub mod error;
 pub mod file_ops;
 pub mod file_state;
 pub mod list_dir;
+pub mod mcp;
 pub mod recall_event;
 pub mod registry;
 pub mod search;

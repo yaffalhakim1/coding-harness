@@ -176,18 +176,18 @@ reliability and ergonomics, not the measured behaviour of the harness.
 - [x] **`harness doctor`** — config, credentials (including fallbacks),
       workspace, tokenizer, tool set, optional live API check
 - [x] **Credential discovery** — falls back to OpenCode's `auth.json`
+- [x] **Session list + resume** — snapshots persist the full conversation;
+      resuming replays it into a fresh window so the model continues
+- [x] **MCP client** — stdio and HTTP; server tools register as `<server>__<tool>`
+- [x] **Subagents** — opt-in `task` tool, two levels deep, children get their own
+      context window
+- [x] **TUI** — ratatui viewer driven by progress events, plus `--headless`
 
-Deliberately **not** added, with reasons:
+Still deliberately absent:
 
-- TUI / desktop / web UI — this is a headless harness for measurement; a UI is a
-  separate product
-- Swarm / subagents — orthogonal to the paper's questions and a large surface
-- Semantic memory — the paper's context management is the subject under test;
-  adding a second memory system would confound it
-- MCP client — useful, but no MCP server is in the loop for the paper's
-  benchmarks
+- Swarm coordination — subagents cover delegation without the conflict machinery
+- Semantic memory — the paper's context management is the subject under test
 - LSP integration — post-edit diagnostics cover the immediate need
-- Session resume across harnesses — trajectories already persist per session
 
 ## Known gaps
 

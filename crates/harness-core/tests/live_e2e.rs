@@ -119,6 +119,7 @@ async fn solves_a_file_edit_task_against_the_real_api() {
         tokenizer: &tokenizer,
         planner: None,
         plan_state: None,
+        progress: None,
     };
 
     let session = run_agent_loop(&file_edit_task(), &config, deps)

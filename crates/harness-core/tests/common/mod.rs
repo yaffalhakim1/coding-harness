@@ -77,18 +77,26 @@ pub fn run(
     task: Task,
     config: &SessionConfig,
 ) -> Session {
-    let deps = AgentDeps {
-        llm: provider.clone(),
-        actions: &h.actions,
-        context: h.context.as_ref(),
-        tokenizer: &h.tokenizer,
-        planner: None,
-        plan_state: h.plan_state.clone(),
-    };
+    let deps = h.deps(provider);
     tokio::runtime::Runtime::new()
         .unwrap()
         .block_on(run_agent_loop(&task, config, deps))
         .unwrap()
+}
+
+impl Harness {
+    /// Borrow into the shape the agent loop expects.
+    pub fn deps<'a>(&'a self, provider: &Arc<MockProvider>) -> AgentDeps<'a> {
+        AgentDeps {
+            llm: provider.clone(),
+            actions: &self.actions,
+            context: self.context.as_ref(),
+            tokenizer: &self.tokenizer,
+            planner: None,
+            plan_state: self.plan_state.clone(),
+            progress: None,
+        }
+    }
 }
 
 pub fn call(id: &str, name: &str, args: serde_json::Value) -> ToolCall {

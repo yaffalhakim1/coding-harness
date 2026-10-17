@@ -7,6 +7,7 @@ members = [
     "crates/harness-actions",
     "crates/harness-models",
     "crates/harness-bench",
+    "crates/harness-tui",
     "crates/harness-cli",
 ]
 

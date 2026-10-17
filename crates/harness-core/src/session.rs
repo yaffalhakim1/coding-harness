@@ -29,6 +29,12 @@ pub struct SessionConfig {
     /// Hard cap on total tokens per session (plan §6: cost runaway).
     #[serde(default)]
     pub token_budget: Option<usize>,
+    /// Whether the `task` tool is exposed, letting the agent spawn subagents.
+    ///
+    /// Off by default: subagents change the action space, and a sweep must not
+    /// silently measure a different harness than the one it claims to.
+    #[serde(default)]
+    pub subagents: bool,
 }
 
 fn default_max_narration() -> u32 {
@@ -48,6 +54,7 @@ impl Default for SessionConfig {
             thresholds: ThresholdSettings::default(),
             max_narration_turns: default_max_narration(),
             token_budget: None,
+            subagents: false,
         }
     }
 }

@@ -6,6 +6,7 @@
 //! that does not answer.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::Result;
 
@@ -136,14 +137,25 @@ pub async fn run(args: DoctorArgs) -> Result<i32> {
         Err(e) => checks.push(Check::fail("tokenizer", e.to_string())),
     }
 
-    // 5. The tool set resolves for the configured action space.
+    // 5. The tool set resolves for the configured action space, including the
+    //    opt-in tools (subagents) and any MCP servers.
     if let Some(config) = &session {
         if let Ok(ws) = Workspace::open(&args.workspace) {
             let ctx = ToolContext::new(ws);
-            let registry = match config.action_space {
-                harness_core::ActionSpace::BashOnly => DefaultRegistry::bash_only(ctx),
-                _ => DefaultRegistry::with_predefined_tools(ctx),
+            let mut registry = match config.action_space {
+                harness_core::ActionSpace::BashOnly => DefaultRegistry::bash_only(ctx.clone()),
+                _ => DefaultRegistry::with_predefined_tools(ctx.clone()),
             };
+            if config.subagents {
+                // `doctor` only reports the surface, so a placeholder registry
+                // handle is enough: the tool is never invoked here.
+                registry.register(Arc::new(harness_core::SubagentTool::new(
+                    harness_models::mock::MockProvider::new(Vec::new()),
+                    Arc::new(PlaceholderRegistry),
+                    config.clone(),
+                    0,
+                )));
+            }
             let names: Vec<String> = registry
                 .get_tool_definitions()
                 .into_iter()
@@ -197,6 +209,30 @@ pub async fn run(args: DoctorArgs) -> Result<i32> {
     print_checks(&checks);
     let failed = checks.iter().filter(|c| !c.ok).count();
     Ok(if failed == 0 { 0 } else { 1 })
+}
+
+/// A registry that exposes nothing, used by `doctor` when only the tool
+/// *surface* matters.
+struct PlaceholderRegistry;
+
+#[async_trait::async_trait]
+impl ActionRegistry for PlaceholderRegistry {
+    fn get_tool_definitions(&self) -> Vec<harness_models::types::ToolDefinition> {
+        Vec::new()
+    }
+
+    async fn execute(
+        &self,
+        _tool_call: &harness_models::types::ToolCall,
+    ) -> std::result::Result<String, harness_actions::ActionError> {
+        Err(harness_actions::ActionError::InvalidArgument(
+            "doctor does not execute tools".into(),
+        ))
+    }
+
+    fn has_tool(&self, _name: &str) -> bool {
+        false
+    }
 }
 
 fn print_checks(checks: &[Check]) {

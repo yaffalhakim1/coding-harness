@@ -4,7 +4,6 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use tracing::info;
 
 use harness_actions::{DefaultRegistry, ToolContext, Workspace};
 use harness_context::{build_strategy, Thresholds, Tokenizer};
@@ -13,7 +12,7 @@ use harness_models::OpenAIProvider;
 
 use crate::config::FileConfig;
 use crate::credentials;
-use crate::{AnalyzeArgs, RunArgs};
+use crate::RunArgs;
 
 /// Run one task. Returns the process exit code.
 pub async fn run(args: RunArgs) -> Result<i32> {
@@ -57,13 +56,23 @@ pub async fn run(args: RunArgs) -> Result<i32> {
 
     credentials::check_api_key(&config.model.provider, config.model.api_key_env.as_deref())?;
     let chain = load_model_chain(&args.config)?;
-    let session = execute_with_chain(&config, &chain, &task, &args.workspace, None).await?;
-    report(&session);
+    let mcp_servers = load_mcp_servers(&args.config)?;
+    let session =
+        execute_with_mcp(&config, &chain, &mcp_servers, &task, &args.workspace, None).await?;
+    crate::report::report(&session);
 
     let path = write_trajectory(&session, &args.trajectory_dir).await?;
     println!("trajectory: {}", path.display());
 
-    Ok(exit_code_for(&session))
+    // A snapshot makes the run resumable; the trajectory alone is only a
+    // summary and cannot be continued.
+    if let Ok(snapshot) =
+        harness_core::session_archive::write_session(&session, &args.session_dir).await
+    {
+        println!("session:    {}", snapshot.display());
+    }
+
+    Ok(crate::report::exit_code_for(&session))
 }
 
 /// Load the model preference chain: primary model, then any configured
@@ -113,6 +122,9 @@ fn load_config(args: &RunArgs) -> Result<harness_core::SessionConfig> {
     if let Some(model) = &args.model {
         config.model.model_id = model.clone();
     }
+    if let Some(turns) = args.max_turns {
+        config.max_turns = turns;
+    }
     Ok(config)
 }
 
@@ -159,6 +171,15 @@ pub async fn execute(
     execute_with_chain(config, &chain, task, workspace, tokenizer).await
 }
 
+/// Load and validate the MCP servers declared in a config file.
+pub fn load_mcp_servers(path: &Path) -> Result<Vec<harness_actions::mcp::ServerConfig>> {
+    let file = FileConfig::load(path)?;
+    file.mcp
+        .iter()
+        .map(|server| server.to_server_config())
+        .collect()
+}
+
 /// Execute with an explicit model preference chain (primary, then fallbacks).
 pub async fn execute_with_chain(
     config: &harness_core::SessionConfig,
@@ -167,6 +188,84 @@ pub async fn execute_with_chain(
     workspace: &Path,
     tokenizer: Option<&Tokenizer>,
 ) -> Result<Session> {
+    execute_with_mcp(config, chain, &[], task, workspace, tokenizer).await
+}
+
+/// Execute with a model chain and MCP servers.
+pub async fn execute_with_mcp(
+    config: &harness_core::SessionConfig,
+    chain: &[harness_models::types::ModelConfig],
+    mcp_servers: &[harness_actions::mcp::ServerConfig],
+    task: &Task,
+    workspace: &Path,
+    tokenizer: Option<&Tokenizer>,
+) -> Result<Session> {
+    let prepared = prepare_with_mcp(config, chain, workspace, tokenizer, mcp_servers).await?;
+    run_agent_loop(task, config, prepared.deps()).await
+}
+
+/// Resume a previous session with an explicit model chain.
+pub async fn resume_with_chain(
+    previous: &Session,
+    config: &harness_core::SessionConfig,
+    chain: &[harness_models::types::ModelConfig],
+    workspace: &Path,
+    tokenizer: Option<&Tokenizer>,
+) -> Result<Session> {
+    let prepared = prepare(config, chain, workspace, tokenizer).await?;
+    harness_core::agent::resume_agent_loop(previous, config, prepared.deps()).await
+}
+
+/// A registry handle that is filled in after the registry is built.
+///
+/// The `task` tool needs to hand its child the same tool set it is part of,
+/// which is a cycle: registry → task tool → registry. Resolving it with a
+/// A harness assembled for one run.
+///
+/// Holds the tool registry, context strategy and plan state together so the
+/// borrow in [`AgentDeps`] stays valid for the duration of a run.
+pub struct Prepared {
+    pub actions: Arc<DefaultRegistry>,
+    pub context: Box<dyn harness_context::ContextStrategy>,
+    pub tokenizer: Tokenizer,
+    pub plan_state: Option<harness_actions::PlanState>,
+    pub llm: Arc<dyn harness_models::LLMProvider>,
+}
+
+impl Prepared {
+    /// Borrow into the shape the agent loop expects.
+    pub fn deps(&self) -> AgentDeps<'_> {
+        AgentDeps {
+            llm: self.llm.clone(),
+            actions: self.actions.as_ref(),
+            context: self.context.as_ref(),
+            tokenizer: &self.tokenizer,
+            planner: None,
+            plan_state: self.plan_state.clone(),
+            progress: None,
+        }
+    }
+}
+
+/// Build the harness for a config: tools, context strategy, plan state.
+pub async fn prepare(
+    config: &harness_core::SessionConfig,
+    chain: &[harness_models::types::ModelConfig],
+    workspace: &Path,
+    tokenizer: Option<&Tokenizer>,
+) -> Result<Prepared> {
+    prepare_with_mcp(config, chain, workspace, tokenizer, &[]).await
+}
+
+/// Build the harness, connecting the given MCP servers and registering their
+/// tools alongside the built-in ones.
+pub async fn prepare_with_mcp(
+    config: &harness_core::SessionConfig,
+    chain: &[harness_models::types::ModelConfig],
+    workspace: &Path,
+    tokenizer: Option<&Tokenizer>,
+    mcp_servers: &[harness_actions::mcp::ServerConfig],
+) -> Result<Prepared> {
     std::fs::create_dir_all(workspace)
         .with_context(|| format!("creating workspace '{}'", workspace.display()))?;
 
@@ -202,6 +301,18 @@ pub async fn execute_with_chain(
         actions = actions.with_recall(ctx, event_store.clone());
     }
 
+    // MCP tools are additive to whatever action space was chosen: a bash-only
+    // run may still use an MCP server the user configured explicitly.
+    if !mcp_servers.is_empty() {
+        let (mcp_actions, failures) = harness_actions::mcp::connect_all(mcp_servers).await;
+        for failure in failures {
+            tracing::warn!(server = %failure, "MCP server skipped");
+        }
+        for action in mcp_actions {
+            actions.register(std::sync::Arc::new(action));
+        }
+    }
+
     let tokenizer = match tokenizer {
         Some(t) => t.clone(),
         None => Tokenizer::new()?,
@@ -209,161 +320,41 @@ pub async fn execute_with_chain(
 
     let llm = build_provider(chain)?;
 
+    // Subagents are opt-in because they change the action space. The `task`
+    // tool needs a handle to the registry it lives in, so it is given a shared
+    // cell that is filled after registration.
+    let actions: Arc<DefaultRegistry> = if config.subagents {
+        let cell: Arc<std::sync::OnceLock<Arc<dyn harness_actions::ActionRegistry>>> =
+            Arc::new(std::sync::OnceLock::new());
+        let task_tool = harness_core::SubagentTool::new(
+            llm.clone(),
+            Arc::new(crate::late_registry::LateBoundRegistry(cell.clone())),
+            config.clone(),
+            0,
+        );
+        let mut registry = actions;
+        registry.register(Arc::new(task_tool));
+        let shared = Arc::new(registry);
+        let _ = cell.set(shared.clone());
+        shared
+    } else {
+        Arc::new(actions)
+    };
+
     let context = build_strategy(
         config.context_strategy,
         Thresholds::from(config.thresholds),
         tokenizer.clone(),
         llm.clone(),
         &config.model,
-        event_store.clone(),
+        event_store,
     );
 
-    let deps = AgentDeps {
-        llm,
-        actions: &actions,
-        context: context.as_ref(),
-        tokenizer: &tokenizer,
-        planner: None,
+    Ok(Prepared {
+        actions,
+        context,
+        tokenizer,
         plan_state,
-    };
-
-    run_agent_loop(task, config, deps).await
-}
-
-/// Print a human-readable summary of a session.
-pub fn report(session: &Session) {
-    let outcome = session
-        .outcome
-        .as_ref()
-        .map(harness_core::SessionOutcome::label)
-        .unwrap_or("none");
-
-    info!(outcome, "Session finished");
-    println!();
-    println!("outcome          {outcome}");
-    println!("turns            {}", session.turn_count());
-    println!(
-        "tokens           {} (prompt {}, completion {})",
-        session.total_usage.total_tokens,
-        session.total_usage.prompt_tokens,
-        session.total_usage.completion_tokens
-    );
-    match session.cost_usd() {
-        Some(cost) => println!("cost             ${cost:.4}"),
-        None => println!("cost             unknown (no prices in config)"),
-    }
-    println!("peak context     {}", session.peak_context_tokens);
-    println!("summarizations   {}", session.summarize_calls);
-    println!("duration         {}s", session.elapsed_secs());
-
-    if let Some(result) = session.outcome.as_ref().and_then(|o| o.task_result()) {
-        if !result.test_output.is_empty() {
-            println!();
-            println!("verification:");
-            println!("{}", result.test_output.trim_end());
-        }
-    }
-}
-
-fn exit_code_for(session: &Session) -> i32 {
-    if session
-        .outcome
-        .as_ref()
-        .is_some_and(harness_core::SessionOutcome::is_success)
-    {
-        0
-    } else {
-        1
-    }
-}
-
-/// Print a summary of a saved trajectory.
-pub fn analyze(args: AnalyzeArgs) -> Result<i32> {
-    let path = resolve_trajectory(&args.trajectory, &args.dir)?;
-    let text = std::fs::read_to_string(&path)
-        .with_context(|| format!("reading trajectory '{}'", path.display()))?;
-    let json: serde_json::Value = serde_json::from_str(&text)?;
-
-    println!(
-        "session          {}",
-        json["session_id"].as_str().unwrap_or("?")
-    );
-    println!(
-        "task             {}",
-        json["task_id"].as_str().unwrap_or("?")
-    );
-    println!(
-        "outcome          {}",
-        json["outcome"].as_str().unwrap_or("none")
-    );
-    println!("config           {}", json["config"]);
-    println!("turns            {}", json["total_turns"]);
-    println!("tokens           {}", json["total_tokens"]);
-    println!("peak context     {}", json["peak_context_tokens"]);
-
-    if let Some(turns) = json["turns"].as_array() {
-        println!();
-        println!(
-            "{:<5} {:<8} {:<8} {:<14} tools",
-            "turn", "in", "out", "stop"
-        );
-        for turn in turns {
-            let tools: Vec<String> = turn["tool_calls"]
-                .as_array()
-                .map(|calls| {
-                    calls
-                        .iter()
-                        .filter_map(|c| c["name"].as_str().map(str::to_string))
-                        .collect()
-                })
-                .unwrap_or_default();
-            println!(
-                "{:<5} {:<8} {:<8} {:<14} {}",
-                turn["turn_number"],
-                turn["prompt_tokens"],
-                turn["output_tokens"],
-                turn["stop_reason"].as_str().unwrap_or("?"),
-                tools.join(",")
-            );
-        }
-    }
-
-    // Failure-stage attribution from the durable trajectory record.
-    if let Some(analysis) = crate::trajectory_analysis::analyse_trajectory(&json) {
-        crate::trajectory_analysis::print_analysis(&analysis);
-    }
-    Ok(0)
-}
-
-/// Resolve a trajectory reference: an existing file, the newest JSON in a
-/// directory, or a session id inside `dir`.
-fn resolve_trajectory(id_or_path: &str, dir: &Path) -> Result<std::path::PathBuf> {
-    let direct = Path::new(id_or_path);
-    if direct.is_file() {
-        return Ok(direct.to_path_buf());
-    }
-
-    // A directory is interpreted as "its newest trajectory", which is what a
-    // user gets from passing `--trajectory-dir` by mistake.
-    if direct.is_dir() {
-        let mut matches: Vec<std::path::PathBuf> = std::fs::read_dir(direct)?
-            .filter_map(Result::ok)
-            .map(|e| e.path())
-            .filter(|p| p.extension().is_some_and(|e| e == "json"))
-            .collect();
-        matches.sort_by_key(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok());
-        return matches
-            .pop()
-            .ok_or_else(|| anyhow::anyhow!("no trajectories in '{}'", direct.display()));
-    }
-
-    let candidate = dir.join(format!("{id_or_path}.json"));
-    if candidate.is_file() {
-        return Ok(candidate);
-    }
-    anyhow::bail!(
-        "no trajectory found for '{}' (looked for a file and {})",
-        id_or_path,
-        candidate.display()
-    )
+        llm,
+    })
 }

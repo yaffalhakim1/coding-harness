@@ -18,13 +18,14 @@ harness-cli (binary)
 
 | Crate | Responsibility |
 |-------|---------------|
-| `harness-core` | Agent loop, session state, stuck detection, verification |
+| `harness-core` | Agent loop, session state, stuck detection, verification, subagents |
 | `harness-context` | Context tiers T0–T4, tokenizer, summarizer, event store wiring |
 | `harness-planning` | Initial plan generation |
-| `harness-actions` | Tools, workspace guard, diagnostics, plan/recall tools |
-| `harness-models` | OpenAI-compatible adapters, retry/backoff, mock provider |
+| `harness-actions` | Tools, workspace guard, diagnostics, MCP client, plan/recall tools |
+| `harness-models` | OpenAI-compatible adapters, retry/backoff, failover, mock provider |
 | `harness-bench` | Task loaders, batch runner, sweep reports, trajectory analysis |
-| `harness-cli` | `run` / `bench` / `ablate` / `analyze` |
+| `harness-tui` | Live terminal view (separate binary) |
+| `harness-cli` | `run` / `bench` / `ablate` / `analyze` / `sessions` / `resume` / `doctor` |
 
 ## Quick Start
 
@@ -120,6 +121,59 @@ harness doctor --config config/default.toml --check-api
 Checks that the config parses, every credential (primary and fallbacks)
 resolves, the workspace is writable, the tokenizer loads, and the tool set
 resolves for the configured action space. `--check-api` sends one real request.
+
+## Sessions
+
+Every `run` writes two files: a trajectory summary for analysis, and a full
+snapshot that can be resumed.
+
+```bash
+harness sessions --dir sessions          # list, newest first
+harness resume --session <id> --dir sessions --config config/default.toml
+```
+
+Resuming replays the prior conversation into a fresh context window, so the
+model continues from where it stopped rather than restarting. Turn numbering
+restarts and the old outcome is discarded; the plan is carried forward.
+
+## MCP servers
+
+Any MCP server's tools become harness tools, named `<server>__<tool>`:
+
+```toml
+[[mcp]]
+name = "demo-tools"
+type = "stdio"
+command = "python"
+args = ["mcp/demo_server.py"]
+```
+
+```bash
+harness run --config config/mcp-demo.toml --task "..."
+```
+
+A server that fails to connect is logged and skipped, so one broken server does
+not stop the run.
+
+## Subagents
+
+Opt-in via `subagents = true`. The agent gains a `task` tool that delegates a
+bounded job to a child run with its own context window; only the child's final
+answer comes back. Recursion is capped at two levels.
+
+Off by default on purpose: subagents change the action space, and a sweep must
+not silently measure a different harness than the one it claims to.
+
+## TUI
+
+```bash
+cargo run -p harness-tui -- --task "fix the parser" --workspace .
+cargo run -p harness-tui -- --task "..." --headless   # transcript, no terminal
+```
+
+The TUI is a viewer: it consumes progress events and renders them, so it cannot
+affect a run. `--headless` prints the same transcript, which makes it usable in
+CI.
 
 ## Configuration
 

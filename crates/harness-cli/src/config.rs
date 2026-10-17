@@ -25,7 +25,13 @@ pub struct FileConfig {
     pub thresholds: Option<ThresholdSettings>,
     #[serde(default)]
     pub token_budget: Option<usize>,
+    /// Expose the `task` tool so the agent can delegate to subagents.
+    #[serde(default)]
+    pub subagents: bool,
     pub model: FileModel,
+    /// MCP servers whose tools are exposed to the agent.
+    #[serde(default)]
+    pub mcp: Vec<FileMcpServer>,
 }
 
 fn default_max_turns() -> u32 {
@@ -66,6 +72,62 @@ pub struct FileModel {
     /// provider, endpoint or key.
     #[serde(default)]
     pub fallbacks: Vec<FileModel>,
+}
+
+/// An MCP server entry in the config file.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileMcpServer {
+    pub name: String,
+    /// `stdio` or `http`.
+    #[serde(rename = "type")]
+    pub transport_type: String,
+    /// For stdio.
+    #[serde(default)]
+    pub command: Option<String>,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub env: std::collections::HashMap<String, String>,
+    /// For http.
+    #[serde(default)]
+    pub url: Option<String>,
+}
+
+impl FileMcpServer {
+    /// Convert to a runtime server config, validating the transport fields.
+    pub fn to_server_config(&self) -> Result<harness_actions::mcp::ServerConfig> {
+        use harness_actions::mcp::Transport;
+
+        let transport = match self.transport_type.to_ascii_lowercase().as_str() {
+            "stdio" => {
+                let command = self
+                    .command
+                    .clone()
+                    .with_context(|| format!("MCP server '{}' has no command", self.name))?;
+                Transport::Stdio {
+                    command,
+                    args: self.args.clone(),
+                    env: self.env.clone(),
+                }
+            }
+            "http" => {
+                let url = self
+                    .url
+                    .clone()
+                    .with_context(|| format!("MCP server '{}' has no url", self.name))?;
+                Transport::Http { url }
+            }
+            other => anyhow::bail!(
+                "MCP server '{}' has unknown type '{other}' (expected stdio or http)",
+                self.name
+            ),
+        };
+
+        Ok(harness_actions::mcp::ServerConfig {
+            name: self.name.clone(),
+            transport,
+        })
+    }
 }
 
 impl FileModel {
@@ -130,6 +192,7 @@ impl FileConfig {
             // Not exposed in the config file: the default is the useful value.
             max_narration_turns: 3,
             token_budget: self.token_budget,
+            subagents: self.subagents,
         })
     }
 

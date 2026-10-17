@@ -88,6 +88,9 @@ pub enum ActionError {
 
     #[error("fetching '{url}' failed: {reason}")]
     Fetch { url: String, reason: String },
+
+    #[error("MCP tool '{tool}' failed: {reason}")]
+    Mcp { tool: String, reason: String },
 }
 
 impl ActionError {

@@ -44,6 +44,17 @@ pub struct AgentDeps<'a> {
     /// Shared plan state for the `update_plan` tool. When `None`, planning is
     /// disabled and the tool is not registered.
     pub plan_state: Option<harness_actions::PlanState>,
+    /// Observer for live progress. Defaults to discarding.
+    pub progress: Option<Arc<dyn crate::progress::ProgressSink>>,
+}
+
+impl AgentDeps<'_> {
+    /// Emit an event, if anyone is listening.
+    fn report(&self, event: crate::progress::Progress) {
+        if let Some(sink) = &self.progress {
+            sink.emit(event);
+        }
+    }
 }
 
 /// Run the agent loop for a single task.
@@ -53,33 +64,87 @@ pub async fn run_agent_loop(
     deps: AgentDeps<'_>,
 ) -> Result<Session> {
     let mut session = Session::new(task.clone(), config.clone());
+    start_session(&mut session, config, deps, None).await
+}
 
+/// Resume a previous session, replaying its history into the context window.
+///
+/// The prior turns are re-added as conversation history so the model continues
+/// from where it stopped. The session keeps its original id so the trajectory
+/// and snapshot are updated rather than forked; `resumed_from` records the fact
+/// that this run continued another.
+pub async fn resume_agent_loop(
+    previous: &Session,
+    config: &SessionConfig,
+    deps: AgentDeps<'_>,
+) -> Result<Session> {
+    let mut session = previous.clone();
+    // A resumed run is a new execution of the same task: timing and turn
+    // numbering restart, and the old outcome must not survive into the new
+    // verdict. The *history* is not dropped — it is replayed into the context
+    // window by `start_session`, so the model continues rather than restarts.
+    session.config = config.clone();
+    session.outcome = None;
+    session.completed_at = None;
+    session.started_at = chrono::Utc::now();
+    session.peak_context_tokens = 0;
+    session.turns.clear();
+
+    start_session(&mut session, config, deps, Some(previous)).await
+}
+
+/// Shared body of the loop, with optional history replay.
+async fn start_session(
+    session: &mut Session,
+    config: &SessionConfig,
+    deps: AgentDeps<'_>,
+    previous: Option<&Session>,
+) -> Result<Session> {
     info!(
         session_id = %session.id,
-        task_id = %task.id,
+        task_id = %session.task.id,
         context_window = config.context_window,
         context_strategy = %config.context_strategy,
         planning_enabled = config.planning_enabled,
         action_space = %config.action_space,
+        resumed_turns = previous.map(|p| p.turns.len()).unwrap_or(0),
         "Starting agent session"
     );
 
-    if let Err(reason) = run_setup(task, deps.actions).await {
+    if let Err(reason) = run_setup(&session.task, deps.actions).await {
         error!(reason = %reason, "Task setup failed");
         session.complete(SessionOutcome::Error(reason));
-        return Ok(session);
+        return Ok(session.clone());
     }
 
-    let mut state = build_initial_state(task, config, &deps, &mut session).await?;
+    let task = session.task.clone();
+    let mut state = build_initial_state(&task, config, &deps, session).await?;
+
+    // Replay prior conversation so the model continues rather than restarts.
+    if let Some(previous) = previous {
+        crate::replay::replay_history(
+            &mut state,
+            previous,
+            deps.tokenizer,
+            deps.plan_state.as_ref(),
+        );
+    }
+
     let tools = deps.actions.get_tool_definitions();
     let start = Instant::now();
     let mut stuck = StuckDetector::default();
     let mut narration_turns = 0u32;
 
+    deps.report(crate::progress::Progress::SessionStarted {
+        session_id: session.id.clone(),
+        task_id: session.task.id.clone(),
+        resumed_turns: previous.map(|p| p.turns.len()).unwrap_or(0),
+    });
+
     loop {
         if let Some(outcome) = guard(
             config,
-            &session,
+            session,
             start.elapsed().as_secs(),
             state.total_tokens(),
         ) {
@@ -125,6 +190,12 @@ pub async fn run_agent_loop(
             stop_reason = ?turn.response.stop_reason,
             "Turn completed"
         );
+        deps.report(crate::progress::Progress::TurnCompleted {
+            turn: turn.turn_number,
+            tool_calls: turn.tool_calls.len(),
+            usage: turn.response.usage.clone(),
+            text: turn.response.message.text().to_string(),
+        });
 
         if turn.tool_calls.is_empty() {
             // No action means the model is done (paper §2: the loop ends when
@@ -137,7 +208,7 @@ pub async fn run_agent_loop(
             if has_content || narration_turns >= limit {
                 turn.set_duration(turn_start.elapsed().as_millis() as u64);
                 session.record_turn(turn);
-                session.complete(finish(task, deps.actions).await);
+                session.complete(finish(&task, deps.actions).await);
                 break;
             }
 
@@ -161,6 +232,7 @@ pub async fn run_agent_loop(
             &mut state,
             deps.tokenizer,
             &mut stuck,
+            deps.progress.as_ref(),
         )
         .await;
         begin_turn(&mut state);
@@ -175,6 +247,7 @@ pub async fn run_agent_loop(
         }
 
         let capacity = config.context_window;
+        let tokens_before = state.total_tokens();
         if let Err(e) = deps.context.manage(&mut state, capacity).await {
             warn!(error = %e, "Context management failed");
             if config.context_strategy == ContextTier::T0 {
@@ -182,12 +255,28 @@ pub async fn run_agent_loop(
                 break;
             }
         }
+        let tokens_after = state.total_tokens();
+        if tokens_after < tokens_before {
+            deps.report(crate::progress::Progress::ContextManaged {
+                tokens_before,
+                tokens_after,
+            });
+        }
         session.observe_context(state.total_tokens());
     }
 
     session.summarize_calls = summarize_calls(deps.context);
-    log_completion(&session);
-    Ok(session)
+    log_completion(session);
+    deps.report(crate::progress::Progress::SessionFinished {
+        outcome: session
+            .outcome
+            .as_ref()
+            .map(|o| o.label().to_string())
+            .unwrap_or_else(|| "none".into()),
+        turns: session.turn_count(),
+        total_tokens: session.total_usage.total_tokens,
+    });
+    Ok(session.clone())
 }
 
 /// Guard rails checked before each model call.

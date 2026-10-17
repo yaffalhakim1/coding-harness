@@ -10,7 +10,10 @@ mod bench_cmd;
 mod config;
 mod credentials;
 mod doctor_cmd;
+mod late_registry;
+mod report;
 mod run_cmd;
+mod sessions_cmd;
 mod trajectory_analysis;
 
 use std::path::PathBuf;
@@ -42,6 +45,10 @@ enum Command {
     Bench(BenchArgs),
     /// Run the paper's component ablations and compare settings.
     Ablate(AblateArgs),
+    /// List saved sessions.
+    Sessions(SessionsArgs),
+    /// Continue a saved session.
+    Resume(ResumeArgs),
     /// Check that a configuration can actually run.
     Doctor(DoctorArgs),
     /// Print a summary of a saved trajectory.
@@ -70,6 +77,10 @@ pub struct RunArgs {
     #[arg(long, default_value = "trajectories")]
     trajectory_dir: PathBuf,
 
+    /// Where to write the resumable session snapshot.
+    #[arg(long, default_value = "sessions")]
+    session_dir: PathBuf,
+
     /// Validate configuration and credentials without calling the model.
     #[arg(long)]
     dry_run: bool,
@@ -86,8 +97,13 @@ pub struct RunArgs {
     #[arg(long, value_enum)]
     action_space: Option<ActionSpaceArg>,
 
+    /// Override the model id.
     #[arg(long)]
     model: Option<String>,
+
+    /// Override the turn budget.
+    #[arg(long)]
+    max_turns: Option<u32>,
 }
 
 #[derive(clap::Args, Debug)]
@@ -146,6 +162,46 @@ pub struct AnalyzeArgs {
 
     #[arg(long, default_value = "trajectories")]
     dir: PathBuf,
+}
+
+#[derive(clap::Args, Debug)]
+pub struct SessionsArgs {
+    /// Directory holding session snapshots and trajectories.
+    #[arg(long, default_value = "sessions")]
+    pub dir: PathBuf,
+
+    /// Maximum rows to print.
+    #[arg(long)]
+    pub limit: Option<usize>,
+}
+
+#[derive(clap::Args, Debug)]
+pub struct ResumeArgs {
+    /// Session id, or a path to a snapshot file.
+    #[arg(long)]
+    pub session: String,
+
+    #[arg(long, default_value = "sessions")]
+    pub dir: PathBuf,
+
+    #[arg(long, default_value = "trajectories")]
+    pub trajectory_dir: PathBuf,
+
+    #[arg(long, default_value = "config/default.toml")]
+    pub config: PathBuf,
+
+    #[arg(long, default_value = ".")]
+    pub workspace: PathBuf,
+
+    #[arg(long, value_enum)]
+    pub context_strategy: Option<TierArg>,
+
+    /// Turn budget for the continued run.
+    #[arg(long)]
+    pub max_turns: Option<u32>,
+
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 #[derive(clap::Args, Debug)]
@@ -290,7 +346,27 @@ async fn main() -> Result<()> {
             })
             .await?
         }
-        Command::Analyze(args) => run_cmd::analyze(args)?,
+        Command::Analyze(args) => report::analyze(args)?,
+        Command::Sessions(args) => {
+            sessions_cmd::sessions(sessions_cmd::SessionsArgs {
+                dir: args.dir,
+                limit: args.limit,
+            })
+            .await?
+        }
+        Command::Resume(args) => {
+            sessions_cmd::resume(sessions_cmd::ResumeArgs {
+                session: args.session,
+                dir: args.dir,
+                trajectory_dir: args.trajectory_dir,
+                config: args.config,
+                workspace: args.workspace,
+                context_strategy: args.context_strategy,
+                max_turns: args.max_turns,
+                dry_run: args.dry_run,
+            })
+            .await?
+        }
         Command::Doctor(args) => {
             doctor_cmd::run(doctor_cmd::DoctorArgs {
                 config: args.config,
