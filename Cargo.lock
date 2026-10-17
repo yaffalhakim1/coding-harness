@@ -822,6 +822,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "harness-acp"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "harness-actions",
+ "harness-context",
+ "harness-core",
+ "harness-models",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "harness-actions"
 version = "0.1.0"
 dependencies = [

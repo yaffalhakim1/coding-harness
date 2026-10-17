@@ -25,6 +25,7 @@ harness-cli (binary)
 | `harness-models` | OpenAI-compatible adapters, retry/backoff, failover, mock provider |
 | `harness-bench` | Task loaders, batch runner, sweep reports, trajectory analysis |
 | `harness-tui` | Live terminal view (separate binary) |
+| `harness-acp` | Agent Client Protocol server over stdio — the Kerenzikov integration |
 | `harness-cli` | `run` / `bench` / `ablate` / `analyze` / `sessions` / `resume` / `doctor` |
 
 ## Quick Start
@@ -210,6 +211,29 @@ cost when prices are configured.
   `cargo test -p harness-core --test live_e2e -- --ignored --nocapture`
 - Ablations reproduce the paper's four claims in direction — see `task.md` for
   the measured tables and `docs/replication.md` for how to re-run them.
+
+## ACP (Kerenzikov integration)
+
+`harness-acp` speaks Agent Client Protocol v1 over stdio, so a native client
+like [Kerenzikov](https://github.com/yaffalhakim1/Kerenzikov-app) can launch it
+as a provider alongside Copilot, Cursor, Grok and Kimi.
+
+```bash
+HARNESS_MODEL=deepseek-v4-1-flash \
+HARNESS_API_BASE=https://kenari.id/v1 \
+HARNESS_API_KEY_ENV=KENARI_API_KEY \
+HARNESS_STRATEGY=T4 \
+harness-acp --stdio
+```
+
+The agent advertises `loadSession`, `session/resume`, `session/close` and
+`embeddedContext`, and streams `agent_message_chunk`, `tool_call`,
+`tool_call_update`, `usage_update` and `plan` updates. Image and audio are
+advertised as unsupported rather than accepted and degraded.
+
+See `docs/acp.md` for the method table, the update mapping, and the gaps against
+a full provider integration — chiefly that there is no
+`session/request_permission` yet, so a client cannot gate a `bash` call.
 
 ## Development
 

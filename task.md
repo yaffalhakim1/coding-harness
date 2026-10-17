@@ -189,6 +189,25 @@ Still deliberately absent:
 - Semantic memory — the paper's context management is the subject under test
 - LSP integration — post-edit diagnostics cover the immediate need
 
+## ACP server (the Kerenzikov integration)
+
+- [x] `harness-acp` binary speaking Agent Client Protocol v1 over stdio
+- [x] `initialize` with `loadSession`, `session/resume`, `session/close`,
+      `embeddedContext` — every advertised capability has a handler
+- [x] `session/new` / `load` / `resume` / `close` / `list` / `prompt` / `cancel`
+- [x] Streamed `agent_message_chunk`, `tool_call`, `tool_call_update`,
+      `usage_update`, `plan`
+- [x] Tool `kind` mapping (read/edit/search/execute/fetch/think)
+- [x] Environment-driven config, because the client launches the binary
+- [x] Logging to stderr only — stdout is the protocol stream
+- [x] 8 stdio integration tests spawning the real binary, plus a live
+      `#[ignore]`d prompt turn verified against a real model
+- [x] `docs/acp.md` documents the method table and the gaps
+
+Bugs this caught: `mimeType` and `optionId` were not camelCase-renamed (silently
+`None`), a bad `cwd` returned `-32603` instead of `-32602`, and `session/close`
+reused a params struct that required `cwd`.
+
 ## Known gaps
 
 - [ ] Isolation is a per-task directory, not a container; tasks that install
@@ -200,3 +219,8 @@ Still deliberately absent:
 - [ ] Cost accounting needs prices in config; unknown costs report as `null`
       rather than being guessed.
 - [ ] `web_fetch` reduces HTML with a hand-rolled stripper, not a real parser.
+- [ ] **No `session/request_permission`.** A client cannot gate a `bash` call,
+      which is what makes Supervised mode meaningful. This is the largest gap
+      for the Kerenzikov integration and the one worth closing first.
+- [ ] ACP sessions are in-memory: `session/resume` works within one process
+      lifetime. The CLI already has a snapshot store, so wiring it here is small.
