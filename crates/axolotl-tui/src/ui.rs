@@ -1,289 +1,352 @@
 //! Rendering for the TUI.
 //!
-//! Pure functions over [`App`]: no terminal I/O here, so the layout can be
-//! tested against a `TestBackend` without a real terminal.
+//! Layout follows OpenCode's: no boxes. A one-line header, a borderless
+//! transcript with a thin gutter, a rule, and a status line. Borders on every
+//! panel cost six rows and four columns to say nothing.
+//!
+//! Pure functions over [`App`], so the layout is testable against a
+//! `TestBackend` without a terminal.
+
+use std::collections::VecDeque;
 
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::Modifier;
 use ratatui::text::{Line as TextLine, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Paragraph, Wrap};
 use ratatui::Frame;
 
 use crate::app::{App, Line, RunStatus};
+use crate::theme;
+
+/// Width of the gutter to the left of the transcript.
+const GUTTER: u16 = 2;
 
 /// Draw the whole screen.
 pub fn draw(frame: &mut Frame, app: &App) {
+    // The task is pinned above the transcript rather than scrolled with it: a
+    // long run should never leave you unsure what it is working on.
+    let has_task = !app.task.trim().is_empty();
+    let mut constraints = vec![Constraint::Length(1)]; // header
+    if has_task {
+        constraints.push(Constraint::Length(1)); // task
+    }
+    constraints.push(Constraint::Min(3)); // transcript
+    constraints.push(Constraint::Length(1)); // rule
+    constraints.push(Constraint::Length(1)); // status
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3), // header
-            Constraint::Min(5),    // transcript
-            Constraint::Length(1), // footer
-        ])
+        .constraints(constraints)
         .split(frame.area());
 
     draw_header(frame, app, chunks[0]);
-    draw_transcript(frame, app, chunks[1]);
-    draw_footer(frame, app, chunks[2]);
+    let mut next = 1;
+    if has_task {
+        draw_task(frame, app, chunks[next]);
+        next += 1;
+    }
+    draw_transcript(frame, app, chunks[next]);
+    draw_rule(frame, chunks[next + 1]);
+    draw_status(frame, app, chunks[next + 2]);
 }
 
-fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
-    let status = match app.status {
-        RunStatus::Running => Span::styled(
-            " running ",
-            Style::default().fg(Color::Black).bg(Color::Yellow),
-        ),
-        RunStatus::Finished => {
-            let ok = app.outcome.as_deref() == Some("success");
-            Span::styled(
-                format!(" {} ", app.outcome.as_deref().unwrap_or("done")),
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(if ok { Color::Green } else { Color::Red }),
-            )
-        }
-    };
+/// The task, pinned.
+fn draw_task(frame: &mut Frame, app: &App, area: Rect) {
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(GUTTER), Constraint::Min(10)])
+        .split(area);
 
-    let meta = format!(
-        " {}  ·  {}  ·  {}/{}k  ·  {} turns  ·  {}/{} tools",
-        app.model,
-        app.strategy,
-        app.window / 1000,
-        "",
-        app.turns,
-        app.tool_calls - app.failed_tool_calls,
-        app.tool_calls,
+    frame.render_widget(
+        Paragraph::new(TextLine::from(Span::styled("│", theme::muted()))),
+        columns[0],
     );
+    frame.render_widget(
+        Paragraph::new(TextLine::from(Span::styled(
+            app.task.clone(),
+            theme::strong(),
+        ))),
+        columns[1],
+    );
+}
 
-    let block = Block::default().borders(Borders::ALL).title(" Axolotl ");
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+/// `◆ axolotl  model · tier · 128k`
+fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
+    let marker = Span::styled("◆ ", theme::accent());
+    let name = Span::styled("axolotl", theme::heading());
+    let separator = Span::styled("  ·  ", theme::muted());
 
     let line = TextLine::from(vec![
-        status,
-        Span::raw(meta),
-        Span::raw("  "),
-        Span::styled(
-            format!("{} tok", app.total_tokens()),
-            Style::default().add_modifier(Modifier::DIM),
-        ),
+        marker,
+        name,
+        separator.clone(),
+        Span::styled(app.model.clone(), theme::dim()),
+        separator.clone(),
+        Span::styled(app.strategy.clone(), theme::dim()),
+        separator,
+        Span::styled(format!("{}k", app.window / 1000), theme::dim()),
     ]);
-    frame.render_widget(Paragraph::new(line), inner);
+
+    frame.render_widget(Paragraph::new(line), area);
 }
 
+/// The transcript, with a gutter marker per entry.
 fn draw_transcript(frame: &mut Frame, app: &App, area: Rect) {
-    let block = Block::default().borders(Borders::ALL).title(" transcript ");
-    let inner_height = area.height.saturating_sub(2) as usize;
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(GUTTER), Constraint::Min(10)])
+        .split(area);
 
-    let all: Vec<TextLine> = app.lines.iter().map(render_line).collect();
+    // A tool's start and finish are one logical entry. Showing both doubles the
+    // transcript to say the same thing, so a start is dropped once its end has
+    // arrived; only an in-flight call keeps a "…" line.
+    let lines = visible_lines(&app.lines);
 
-    // Show the tail when following, otherwise the window above the scroll offset.
+    let height = area.height as usize;
+    let rendered: Vec<TextLine> = lines.iter().map(|l| render_line(l)).collect();
+
     let end = if app.follow {
-        all.len()
+        rendered.len()
     } else {
-        all.len().saturating_sub(app.scroll)
+        rendered.len().saturating_sub(app.scroll)
     };
-    let start = end.saturating_sub(inner_height);
-    let visible: Vec<TextLine> = all[start..end].to_vec();
+    let start = end.saturating_sub(height);
 
-    let paragraph = Paragraph::new(visible)
-        .block(block)
-        .wrap(Wrap { trim: false });
-    frame.render_widget(paragraph, area);
+    let gutter: Vec<TextLine> = lines[start..end]
+        .iter()
+        .map(|line| TextLine::from(gutter_marker(line)))
+        .collect();
+
+    frame.render_widget(Paragraph::new(gutter), columns[0]);
+    frame.render_widget(
+        Paragraph::new(rendered[start..end].to_vec()).wrap(Wrap { trim: false }),
+        columns[1],
+    );
+}
+
+/// Collapse tool starts that are immediately followed by their end.
+///
+/// The app appends `ToolStarted` then `ToolFinished` for the same call, in
+/// order, so an adjacent pair is the signal. A start with no end yet is an
+/// in-flight call and is kept.
+fn visible_lines(lines: &VecDeque<Line>) -> Vec<&Line> {
+    let mut out = Vec::with_capacity(lines.len());
+    let mut index = 0;
+
+    while index < lines.len() {
+        let line = &lines[index];
+        let is_start = matches!(line, Line::ToolStart { .. });
+        let next_is_end = matches!(lines.get(index + 1), Some(Line::ToolEnd { .. }));
+
+        if is_start && next_is_end {
+            index += 1; // skip the start; the end carries the information
+            continue;
+        }
+        out.push(line);
+        index += 1;
+    }
+    out
+}
+
+/// The one-character marker shown beside a transcript entry.
+fn gutter_marker(line: &Line) -> Span<'static> {
+    match line {
+        Line::Assistant(_) => Span::styled("│", theme::muted()),
+        Line::ToolStart { .. } | Line::ToolEnd { .. } => Span::styled("│", theme::accent()),
+        Line::Notice(_) | Line::Compaction { .. } => Span::styled("│", theme::muted()),
+    }
 }
 
 /// Turn a transcript entry into a styled line.
 pub fn render_line(line: &Line) -> TextLine<'static> {
     match line {
-        Line::Notice(text) => TextLine::from(Span::styled(
-            format!("· {text}"),
-            Style::default().add_modifier(Modifier::DIM),
-        )),
-        Line::Assistant(text) => TextLine::from(text.clone()),
-        Line::ToolStart { name } => TextLine::from(Span::styled(
-            format!("→ {name}"),
-            Style::default().fg(Color::Cyan),
-        )),
+        Line::Notice(text) => TextLine::from(Span::styled(text.clone(), theme::muted())),
+
+        // The model's prose is the only thing at full contrast: everything else
+        // is metadata about the run.
+        Line::Assistant(text) => TextLine::from(Span::styled(text.clone(), theme::text())),
+
+        Line::ToolStart { name } => TextLine::from(vec![
+            Span::styled(name.clone(), theme::accent()),
+            Span::styled(" …", theme::muted()),
+        ]),
+
         Line::ToolEnd {
             name,
             success,
             duration_ms,
             preview,
         } => {
-            let (mark, colour) = if *success {
-                ("✓", Color::Green)
+            let (mark, style) = if *success {
+                ("✓", theme::ok())
             } else {
-                ("✗", Color::Red)
+                ("✗", theme::err())
             };
-            let preview = preview.trim();
             let mut spans = vec![
-                Span::styled(format!("  {mark} {name}"), Style::default().fg(colour)),
+                Span::styled(format!("{mark} "), style),
+                Span::styled(name.clone(), theme::dim()),
                 Span::styled(
-                    format!(" ({duration_ms}ms)"),
-                    Style::default().add_modifier(Modifier::DIM),
+                    format!("  {}", format_duration(*duration_ms)),
+                    theme::muted(),
                 ),
             ];
+            let preview = preview.trim();
             if !preview.is_empty() {
-                spans.push(Span::raw(format!(" {preview}")));
+                spans.push(Span::styled("  ", theme::muted()));
+                spans.push(Span::styled(preview.to_string(), theme::muted()));
             }
             TextLine::from(spans)
         }
+
         Line::Compaction { freed } => TextLine::from(Span::styled(
-            format!("· context compacted, {freed} tokens freed"),
-            Style::default().fg(Color::Magenta),
+            format!("context compacted · {} tokens freed", format_count(*freed)),
+            theme::muted(),
         )),
     }
 }
 
-fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
-    let hint = if app.status == RunStatus::Finished {
-        "q quit  ·  ↑↓ scroll  ·  f follow"
-    } else {
-        "q quit  ·  ↑↓ scroll  ·  f follow  ·  running…"
-    };
-    let text = if app.follow {
-        hint.to_string()
-    } else {
-        format!("{hint}  ·  scrolled {} lines", app.scroll)
-    };
+/// `840ms`, `1.2s`, `14s` — never `1204ms`.
+fn format_duration(ms: u64) -> String {
+    match ms {
+        0..=999 => format!("{ms}ms"),
+        1_000..=59_999 => {
+            let seconds = ms as f64 / 1_000.0;
+            // `14.0s` reads as a measurement; `14s` reads as a duration.
+            if (seconds - seconds.round()).abs() < 0.05 {
+                format!("{}s", seconds.round() as u64)
+            } else {
+                format!("{seconds:.1}s")
+            }
+        }
+        _ => format!("{}s", ms / 1_000),
+    }
+}
+
+/// Thousands separators, so `51000` reads as `51,000`.
+fn format_count(value: usize) -> String {
+    let digits = value.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, ch) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    out
+}
+
+fn draw_rule(frame: &mut Frame, area: Rect) {
+    let width = area.width as usize;
     frame.render_widget(
-        Paragraph::new(Span::styled(
-            text,
-            Style::default().add_modifier(Modifier::DIM),
-        )),
+        Paragraph::new(Span::styled(theme::RULE.repeat(width), theme::muted())),
         area,
     );
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::app::App;
-    use axolotl_core::progress::Progress;
-    use axolotl_models::types::TokenUsage;
-    use ratatui::backend::TestBackend;
-    use ratatui::Terminal;
+/// `running  ·  3 turns  ·  12 tools  ·  18.4k tokens`
+///
+/// Degrades by dropping the least important group first, so a narrow terminal
+/// shows fewer facts rather than a truncated one.
+fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
+    let width = area.width as usize;
+    let dot = "  ·  ";
 
-    fn app_with_events() -> App {
-        let mut app = App::new("test task", "gpt-test", "T4".into(), 128_000);
-        app.apply(Progress::SessionStarted {
-            session_id: "s1".into(),
-            task_id: "t1".into(),
-            resumed_turns: 0,
-        });
-        app.apply(Progress::TurnCompleted {
-            turn: 0,
-            tool_calls: 1,
-            usage: TokenUsage {
-                prompt_tokens: 100,
-                completion_tokens: 20,
-                total_tokens: 120,
-            },
-            text: "I will read the file".into(),
-        });
-        app.apply(Progress::ToolStarted {
-            name: "read_file".into(),
-            arguments: "{}".into(),
-        });
-        app.apply(Progress::ToolFinished {
-            name: "read_file".into(),
-            success: true,
-            duration_ms: 4,
-            preview: "contents".into(),
-        });
-        app
+    let mut groups: Vec<Span<'static>> = vec![status_span(app)];
+
+    if app.turns > 0 {
+        groups.push(Span::styled(format!("{} turns", app.turns), theme::dim()));
     }
-
-    /// Render into an 80x24 test terminal and return the text.
-    fn render(app: &App) -> String {
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|f| draw(f, app)).unwrap();
-        let buffer = terminal.backend().buffer();
-        let mut out = String::new();
-        for y in 0..buffer.area.height {
-            for x in 0..buffer.area.width {
-                out.push_str(buffer[(x, y)].symbol());
-            }
-            out.push('\n');
-        }
-        out
-    }
-
-    #[test]
-    fn renders_without_panicking_on_an_empty_app() {
-        let app = App::new("t", "m", "T4".into(), 1000);
-        let text = render(&app);
-        assert!(text.to_lowercase().contains("axolotl"));
-        assert!(text.contains("transcript"));
-    }
-
-    #[test]
-    fn header_shows_model_and_strategy() {
-        let text = render(&app_with_events());
-        assert!(text.contains("gpt-test"), "{text}");
-        assert!(text.contains("T4"), "{text}");
-    }
-
-    #[test]
-    fn transcript_shows_assistant_and_tool_lines() {
-        let text = render(&app_with_events());
-        assert!(text.contains("I will read the file"), "{text}");
-        assert!(text.contains("read_file"), "{text}");
-    }
-
-    #[test]
-    fn a_failed_tool_is_visible() {
-        let mut app = app_with_events();
-        app.apply(Progress::ToolFinished {
-            name: "bash".into(),
-            success: false,
-            duration_ms: 1,
-            preview: "boom".into(),
-        });
-        let text = render(&app);
-        assert!(text.contains("bash"), "{text}");
-        assert!(text.contains("boom"), "{text}");
-    }
-
-    #[test]
-    fn finished_run_shows_its_outcome() {
-        let mut app = app_with_events();
-        app.apply(Progress::SessionFinished {
-            outcome: "success".into(),
-            turns: 1,
-            total_tokens: 120,
-        });
-        let text = render(&app);
-        assert!(text.contains("success"), "{text}");
-    }
-
-    #[test]
-    fn render_line_marks_errors() {
-        let line = Line::ToolEnd {
-            name: "x".into(),
-            success: false,
-            duration_ms: 1,
-            preview: String::new(),
+    if app.tool_calls > 0 {
+        let failed = app.failed_tool_calls;
+        let (text, style) = if failed == 0 {
+            (format!("{} tools", app.tool_calls), theme::dim())
+        } else {
+            (
+                format!("{} tools, {} failed", app.tool_calls, failed),
+                theme::err(),
+            )
         };
-        let rendered = render_line(&line);
-        let joined: String = rendered.spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(joined.contains('✗'), "{joined}");
+        groups.push(Span::styled(text, style));
+    }
+    if app.total_tokens() > 0 {
+        groups.push(Span::styled(
+            format_tokens(app.total_tokens()),
+            theme::dim(),
+        ));
+    }
+    if !app.follow {
+        groups.push(Span::styled(
+            format!("↑ {} lines", app.scroll),
+            theme::accent(),
+        ));
     }
 
-    #[test]
-    fn scrolling_keeps_rendering() {
-        let mut app = app_with_events();
-        for i in 0..40 {
-            app.apply(Progress::TurnCompleted {
-                turn: i,
-                tool_calls: 0,
-                usage: TokenUsage::default(),
-                text: format!("line {i}"),
-            });
+    // Drop groups from the end until the bar fits.
+    let measure = |spans: &[Span<'static>]| -> usize {
+        spans
+            .iter()
+            .map(|s| s.content.chars().count())
+            .sum::<usize>()
+            + dot.len() * spans.len().saturating_sub(1)
+    };
+    while groups.len() > 1 && measure(&groups) > width {
+        groups.pop();
+    }
+
+    let mut spans = Vec::with_capacity(groups.len() * 2);
+    for (index, group) in groups.into_iter().enumerate() {
+        if index > 0 {
+            spans.push(Span::styled(dot, theme::muted()));
         }
-        app.scroll_up(10);
-        let text = render(&app);
-        assert!(text.contains("scrolled 10 lines"), "{text}");
+        spans.push(group);
+    }
+
+    frame.render_widget(Paragraph::new(TextLine::from(spans)), area);
+}
+
+fn status_span(app: &App) -> Span<'static> {
+    match app.status {
+        RunStatus::Running => Span::styled("running", theme::accent()),
+        RunStatus::Finished => {
+            let outcome = app.outcome.as_deref().unwrap_or("done");
+            let style = if outcome == "success" {
+                theme::ok()
+            } else {
+                theme::err()
+            };
+            Span::styled(outcome.to_string(), style.add_modifier(Modifier::BOLD))
+        }
     }
 }
+
+/// `18.4k` rather than `18432`.
+fn format_tokens(tokens: usize) -> String {
+    if tokens < 1_000 {
+        format!("{tokens} tokens")
+    } else if tokens < 1_000_000 {
+        format!("{:.1}k tokens", tokens as f64 / 1_000.0)
+    } else {
+        format!("{:.1}M tokens", tokens as f64 / 1_000_000.0)
+    }
+}
+
+/// The key hints, shown by the binary when a run is interactive.
+pub fn key_hints() -> &'static str {
+    "q quit  ↑↓ scroll  f follow"
+}
+
+/// A one-line banner printed before the alternate screen is entered, so the
+/// hints survive a terminal that swallows the status line.
+pub fn banner(app: &App) -> String {
+    format!(
+        "axolotl · {} · {} · {}k\n{}\n",
+        app.model,
+        app.strategy,
+        app.window / 1000,
+        key_hints()
+    )
+}
+
+
+#[cfg(test)]
+mod tests;

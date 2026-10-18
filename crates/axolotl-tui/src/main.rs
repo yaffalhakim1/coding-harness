@@ -134,13 +134,22 @@ async fn main() -> Result<()> {
     stdout.execute(EnterAlternateScreen)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
 
-    let result = event_loop(&mut terminal, &mut app, &mut events, handle).await;
+    // Restore the terminal even if the loop panics. Without this a crash leaves
+    // the shell in raw mode with no cursor, which looks like a hung terminal.
+    let _guard = TerminalGuard;
 
-    disable_raw_mode().ok();
-    terminal.backend_mut().execute(LeaveAlternateScreen).ok();
-    terminal.show_cursor().ok();
+    event_loop(&mut terminal, &mut app, &mut events, handle).await
+}
 
-    result
+/// Restores the terminal on drop.
+struct TerminalGuard;
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        disable_raw_mode().ok();
+        std::io::stdout().execute(LeaveAlternateScreen).ok();
+        std::io::stdout().execute(crossterm::cursor::Show).ok();
+    }
 }
 
 /// Print the transcript as it happens, without touching the terminal.

@@ -5,6 +5,7 @@
 //! and renders them, which keeps the harness itself headless and testable.
 
 pub mod app;
+pub mod theme;
 pub mod ui;
 
 pub use app::{App, RunStatus};
