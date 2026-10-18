@@ -116,7 +116,10 @@ fn no_box_borders_are_drawn() {
     // The redesign's whole point: chrome costs rows and says nothing.
     let text = render(&app_with_events());
     for border in ['┌', '┐', '└', '┘', '├', '┤'] {
-        assert!(!text.contains(border), "found a box border {border}: {text}");
+        assert!(
+            !text.contains(border),
+            "found a box border {border}: {text}"
+        );
     }
 }
 

@@ -1,24 +1,125 @@
 # Axolotl
 
-A lightweight coding agent written in Rust, designed to be driven by
+A lightweight coding agent in Rust. One binary, millisecond startup, a few
+megabytes of memory — built to be driven from the terminal or from
 [Kerenzikov](https://github.com/yaffalhakim1/Kerenzikov-app) over the Agent
 Client Protocol.
 
 ```bash
-axolotl run --task "fix the parser" --workspace .
+axolotl run --task "the parser panics on empty input — fix it"
 ```
 
-## Why
+**New here?** Read [docs/what-it-does.md](docs/what-it-does.md) — plain language,
+no Rust, and it says what it *cannot* do as clearly as what it can.
 
-OpenCode is a Node process tree. Axolotl is one Rust binary that carries the
-agent loop, the tools, context management and MCP. Kerenzikov launches it the
-same way it launches Copilot, Cursor, Grok or Kimi — over ACP — so a session
-costs one process, not a runtime.
+## Why it exists
 
-The design is informed by ["An Empirical Study of Harness Design for Coding
-Agents"](https://arxiv.org/abs/2609.20804): context management tiers T0–T4,
-persistent planning, and the predefined-vs-bash action space are all
-implemented and measurable (`axolotl ablate`).
+OpenCode is a Node process tree that can use hundreds of megabytes before doing
+anything useful. Axolotl is one Rust binary that starts in milliseconds, so you
+can run several at once. It is the agent behind Kerenzikov, a native desktop app
+for coding agents.
+
+## Install
+
+```bash
+cargo install --path crates/axolotl-cli   # the `axolotl` command
+cargo install --path crates/axolotl-acp   # ACP server, for Kerenzikov
+cargo install --path crates/axolotl-tui   # live terminal view
+```
+
+Then check the setup before spending tokens:
+
+```bash
+axolotl doctor --config config/kenari.toml --check-api
+```
+
+Details: [docs/install.md](docs/install.md).
+
+## Commands
+
+| Command | What it does |
+|---|---|
+| `axolotl run` | run one task |
+| `axolotl sessions` | list saved sessions |
+| `axolotl resume` | continue a saved session |
+| `axolotl doctor` | validate config, credentials, workspace, endpoint |
+| `axolotl analyze` | failure-stage attribution for one trajectory |
+| `axolotl bench` | run a benchmark suite |
+| `axolotl ablate` | compare context tiers and component settings |
+
+## What it does
+
+**Reads and edits code** with tools for reading, writing, targeted edits,
+listing, filename search, and content search — plus a shell for everything else.
+
+**Verifies its work** by running your test command and reading the exit status.
+It cannot claim a test passed unless it ran it.
+
+**Asks before acting.** Writing, editing, or running a command requires approval
+in the ACP path. A rejection comes back as a recoverable observation, so the
+model tries another approach rather than failing the turn.
+
+**Asks you questions** when genuinely blocked, instead of guessing.
+
+**Keeps a checklist** for multi-step work, and will not call the job finished
+with items still open.
+
+**Uses skills** from `.axolotl/skills/<name>/SKILL.md`, loaded on demand.
+
+**Understands slash commands**: `/help`, `/skills`, `/plan`, `/review`, `/test`,
+and one per skill.
+
+**Delegates** a bounded investigation to a subagent with its own context window.
+
+**Uses MCP servers** — any server's tools become available as
+`<server>__<tool>`.
+
+**Resumes** a saved session where it stopped.
+
+## What is behind it
+
+Context management follows ["An Empirical Study of Harness Design for Coding
+Agents"](https://arxiv.org/abs/2609.20804). Five tiers, differing in which of
+three mechanisms they use:
+
+| Tier | Elision | Recall | Summarisation |
+|---|---|---|---|
+| T0 | — | — | — |
+| T1 | ✓ | — | — |
+| T2 | ✓ | ✓ | — |
+| T3 | — | — | ✓ |
+| **T4** | ✓ | ✓ | ✓ |
+
+Only the *middle* of the conversation is ever compacted: the system prompt, task
+and plan stay verbatim, and so do the last two turns. T4 elides stale tool output
+first (cheap) and only summarises if that was not enough — which is why it
+reaches the same accuracy as T3 with fewer model calls.
+
+Measured at a 1k window, where the budget binds:
+
+| Setting | Pass | Mean tokens | Overflow |
+|---|---|---|---|
+| T0 | 0/3 | 2,734 | 3 |
+| T1 | 3/3 | 26,406 | 0 |
+| T3 | 3/3 | 29,046 | 0 |
+| **T4** | **3/3** | **27,064** | 0 |
+
+At 4k and 32k every tier ties — the benefit disappears once the window stops
+binding, which is the paper's other half. Full tables and caveats in
+[task.md](task.md) and [docs/replication.md](docs/replication.md).
+
+## Documentation
+
+| Document | For |
+|---|---|
+| [what-it-does.md](docs/what-it-does.md) | non-technical overview, and what it cannot do |
+| [install.md](docs/install.md) | install and first run |
+| [configuration.md](docs/configuration.md) | every config key and its default |
+| [how-it-works.md](docs/how-it-works.md) | the loop, context model, tool layer, failure modes |
+| [acp.md](docs/acp.md) | protocol methods, approval flow, gaps |
+| [replication.md](docs/replication.md) | reproducing the paper's findings |
+| [task.md](task.md) | current status, measured results, known gaps |
+| [implementation_plan.md](implementation_plan.md) | original design and phased plan |
 
 ## Crates
 
@@ -30,136 +131,24 @@ implemented and measurable (`axolotl ablate`).
 | `axolotl-actions` | Tools, workspace guard, permissions, skills, slash commands, MCP |
 | `axolotl-models` | OpenAI-compatible adapters, retry/backoff, failover, mock |
 | `axolotl-bench` | Task loaders, batch runner, sweep reports, trajectory analysis |
-| `axolotl-acp` | ACP v1 server over stdio — the Kerenzikov integration |
+| `axolotl-acp` | ACP v1 server over stdio |
 | `axolotl-tui` | Live terminal view |
-| `axolotl-cli` | `run` / `bench` / `ablate` / `analyze` / `sessions` / `resume` / `doctor` |
+| `axolotl-cli` | The `axolotl` command |
 
-## Install
+`axolotl-bench` is a leaf: nothing on the run path depends on it, so it is not
+compiled into the agent you actually use.
 
-```bash
-cargo install --path crates/axolotl-cli
-cargo install --path crates/axolotl-acp
-cargo install --path crates/axolotl-tui
-```
+## Known gaps
 
-`axolotl` lands in `~/.cargo/bin`, already on PATH. See `docs/install.md`.
+Stated here rather than buried, because they affect daily use:
 
-## Quick start
-
-```bash
-# Check the configuration before spending tokens
-axolotl doctor --config config/kenari.toml --check-api
-
-# Run a task
-axolotl run --config config/kenari.toml --task "add a --verbose flag to main"
-
-# Resume the last session
-axolotl sessions
-axolotl resume --session <id>
-```
-
-## Interactive features
-
-### Permission prompts
-
-Every mutating tool asks before it runs. In ACP that is
-`session/request_permission`; the client shows the title, the tool kind, and
-offers allow-once / reject. A denial comes back to the model as a recoverable
-observation, so it can try another approach instead of failing the turn.
-
-A destructive-command list (`rm -rf`, `sudo`, `git push`, `git reset --hard`,
-`chmod -R`, …) is refused without waking the user.
-
-### Questions
-
-`ask_user` lets the model ask instead of guessing. Over ACP it routes through
-`elicitation/create`. A dismissed question returns "continue with your best
-judgement" rather than an error, so the turn survives.
-
-### Todo list
-
-`todo` is a structured checklist, distinct from `update_plan`'s free text. It
-is re-injected each turn, and `TodoList::has_unfinished` lets the harness tell
-whether work actually finished.
-
-### Slash commands
-
-Advertised to the client as `available_commands_update` after `session/new`.
-
-| Command | Behaviour |
-|---|---|
-| `/help` | lists commands, no model call |
-| `/skills` | lists workspace skills, no model call |
-| `/plan [what]` | asks for a step-by-step plan |
-| `/review [focus]` | reviews current changes |
-| `/test` | runs tests and reports failures |
-| `/<skill>` | injects that skill's body |
-
-Anything else is an ordinary prompt. A skill shadows a built-in of the same
-name, so a workspace can override `/test` without patching the harness.
-
-### Skills
-
-```
-.axolotl/skills/<name>/SKILL.md
-.agents/skills/<name>/SKILL.md
-```
-
-```markdown
----
-name: commit
-description: Write a conventional commit message
----
-
-Read the staged diff, then write one commit message...
-```
-
-Frontmatter is optional — a body-only file uses its directory name. The body is
-injected only when the skill is invoked, so a repo can carry many skills without
-paying for them in every prompt.
-
-## Context management
-
-| Tier | Strategy |
-|------|----------|
-| T0 | No management — terminates on overflow |
-| T1 | Rule-based elision |
-| T2 | Elision + recall (`recall_event`) |
-| T3 | LLM summarization |
-| **T4** | **Elision → summarization** (default) |
-
-The preamble (system prompt, task, plan) and the last two turns are never
-compacted; only the middle is. Thresholds are the paper's 0.6 / 0.85 soft and
-hard budgets with a 0.3 recent window.
-
-## ACP
-
-```bash
-AXOLOTL_MODEL=deepseek-v4-1-flash \
-AXOLOTL_API_BASE=https://kenari.id/v1 \
-AXOLOTL_API_KEY_ENV=KENARI_API_KEY \
-axolotl-acp --stdio
-```
-
-Implements `initialize`, `session/new|load|resume|close|list|prompt|cancel`,
-plus `session/request_permission` and `elicitation/create` calls back to the
-client. See `docs/acp.md`.
-
-## Configuration
-
-`config/default.toml` (OpenAI), `config/kenari.toml` (Kenari gateway),
-`config/bench-tight.toml` (tight-budget ablation), `config/mcp-demo.toml`,
-`config/subagent-demo.toml`.
-
-Credentials resolve from the environment, then from
-`~/.local/share/opencode/auth.json`. `--dry-run` reports which source was used.
-
-## Validation
-
-- 496 tests, clippy and fmt clean
-- Live end-to-end against a real model: file-edit task, ACP prompt turn,
-  permission-gated write
-- Ablations reproduce the paper's findings in direction — see `task.md`
+- **Unproven on real work.** Every task it has completed is synthetic. It has not
+  yet fixed a real bug in a real repository.
+- **No permission prompt in the terminal.** Only the ACP path asks. `axolotl run`
+  refuses a destructive list and runs everything else immediately.
+- **No rewind or branch.** Resume only.
+- **ACP sessions are in-memory**, so resume does not survive a process restart.
+- **No model catalog** over ACP; the model is set at launch.
 
 ## Development
 
@@ -167,6 +156,18 @@ Credentials resolve from the environment, then from
 cargo test
 cargo clippy --workspace --all-targets
 cargo fmt
+```
+
+Live tests need a real model:
+
+```bash
+cargo test -p axolotl-core --test live_e2e -- --ignored
+```
+
+TUI layout is checked by rendering it into a buffer:
+
+```bash
+cargo test -p axolotl-tui --test preview -- --nocapture
 ```
 
 ## License

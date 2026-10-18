@@ -347,6 +347,5 @@ pub fn banner(app: &App) -> String {
     )
 }
 
-
 #[cfg(test)]
 mod tests;

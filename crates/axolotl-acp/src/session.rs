@@ -115,11 +115,11 @@ pub fn session_config() -> SessionConfig {
         .ok()
         .and_then(|s| ContextTier::parse(&s))
         .unwrap_or(ContextTier::T4);
-    let window = std::env::var("axolotl_context_WINDOW")
+    let window = std::env::var("AXOLOTL_CONTEXT_WINDOW")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(DEFAULT_CONTEXT_WINDOW);
-    let planning = std::env::var("axolotl_planning")
+    let planning = std::env::var("AXOLOTL_PLANNING")
         .map(|v| v != "0" && !v.eq_ignore_ascii_case("false"))
         .unwrap_or(false);
     let max_turns = std::env::var("AXOLOTL_MAX_TURNS")

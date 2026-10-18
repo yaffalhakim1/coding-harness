@@ -1,6 +1,6 @@
 # Task: Axolotl — Phases 1–6
 
-Status: **all six phases complete.**
+Status: **phases 1-6 complete; product features added after.**
 Verified against a real model (Kenari / `deepseek-v4-1-flash`).
 Design: `implementation_plan.md`. Behavioural source of truth:
 `2609.20804v1.pdf`. Replication guide: `docs/replication.md`.
@@ -10,7 +10,7 @@ Design: `implementation_plan.md`. Behavioural source of truth:
 - [x] `cargo check --all-targets` clean, no warnings
 - [x] `cargo clippy --workspace --all-targets` clean
 - [x] `cargo fmt --all --check` clean
-- [x] `cargo test --workspace` — 299 tests + 2 live (ignored by default)
+- [x] `cargo test --workspace` — 516 tests, plus live tests (ignored by default)
 - [x] No source file > 400 LOC
 - [x] No function > 60 LOC
 - [x] `tracing` throughout; every shell command bounded by a timeout
@@ -183,11 +183,30 @@ reliability and ergonomics, not the measured behaviour of the harness.
       context window
 - [x] **TUI** — ratatui viewer driven by progress events, plus `--headless`
 
+### Interactive features (after the ACP server landed)
+
+- [x] **Permission gate** — `PermissionGate` consulted before mutating tools;
+      ACP routes it through `session/request_permission`. Read-only tools skip it.
+      Denials return as recoverable observations.
+- [x] **Destructive-command list** — `rm -rf`, `sudo`, `git reset --hard` and
+      friends refused without asking
+- [x] **`ask_user`** — routed through `elicitation/create`; a dismissal returns
+      "continue with your best judgement" rather than an error
+- [x] **`todo`** — structured checklist with `has_unfinished` for the
+      completion check
+- [x] **Slash commands** — advertised via `available_commands_update`; `/help`
+      and `/skills` answer without a model call
+- [x] **Skills** — `SKILL.md` discovery from two roots, body injected on demand,
+      skills shadow built-ins
+- [x] **TUI redesign** — borderless, warm rust palette, pinned task, collapsed
+      tool lines, status bar that drops groups rather than truncating
+
 Still deliberately absent:
 
 - Swarm coordination — subagents cover delegation without the conflict machinery
 - Semantic memory — the paper's context management is the subject under test
 - LSP integration — post-edit diagnostics cover the immediate need
+- Rewind/branch over ACP — resume exists; truncation does not
 
 ## ACP server (the Kerenzikov integration)
 
@@ -219,8 +238,16 @@ reused a params struct that required `cwd`.
 - [ ] Cost accounting needs prices in config; unknown costs report as `null`
       rather than being guessed.
 - [ ] `web_fetch` reduces HTML with a hand-rolled stripper, not a real parser.
-- [ ] **No `session/request_permission`.** A client cannot gate a `bash` call,
-      which is what makes Supervised mode meaningful. This is the largest gap
-      for the Kerenzikov integration and the one worth closing first.
+- [ ] **`axolotl run` has no permission gate.** Only the ACP path asks. The
+      terminal path refuses the destructive list and runs everything else
+      immediately. This is the largest remaining safety gap.
 - [ ] ACP sessions are in-memory: `session/resume` works within one process
       lifetime. The CLI already has a snapshot store, so wiring it here is small.
+- [ ] **`axolotl-bench` is a dependency of `axolotl-cli`**, so `cargo install`
+      compiles the benchmark stack for a daily driver who will never run `bench`.
+      A `bench` feature flag would remove that build cost.
+- [ ] Three overlapping ways to express a plan: the `axolotl-planning` crate,
+      `update_plan`, and `todo`. One should absorb the others.
+- [ ] No rewind or branch over ACP; resume only.
+- [ ] **No evidence on real work.** Every completed task is synthetic. The next
+      meaningful step is one real bug in a real repository.
