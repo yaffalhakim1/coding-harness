@@ -1,5 +1,5 @@
 # Config for the Kenari gateway (OpenAI-compatible).
-# Used by the live end-to-end test; override the model with HARNESS_TEST_MODEL.
+# Used by the live end-to-end test; override the model with AXOLOTL_TEST_MODEL.
 context_window = 128000
 context_strategy = "T4"
 planning_enabled = true

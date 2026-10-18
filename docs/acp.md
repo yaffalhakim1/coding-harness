@@ -1,6 +1,6 @@
 # Launching this harness from Kerenzikov
 #
-# Kerenzikov drives external agent CLIs over a protocol. `harness-acp` speaks
+# Kerenzikov drives external agent CLIs over a protocol. `axolotl-acp` speaks
 # ACP v1 over stdio, which is the same transport it already uses for Copilot,
 # Cursor, Grok and Kimi — so it slots in as a provider without touching
 # Kerenzikov's driver layer.
@@ -17,23 +17,23 @@
 ## Launch command
 
 ```
-harness-acp --stdio
+axolotl-acp --stdio
 ```
 
 ## Environment
 
 | Variable | Meaning | Default |
 |---|---|---|
-| `HARNESS_MODEL` | model id | `deepseek-v4-1-flash` |
-| `HARNESS_API_BASE` | OpenAI-compatible endpoint | provider default |
-| `HARNESS_API_KEY_ENV` | env var holding the API key | `KENARI_API_KEY` |
-| `HARNESS_STRATEGY` | context tier `T0`–`T4` | `T4` |
-| `HARNESS_CONTEXT_WINDOW` | token budget | `128000` |
-| `HARNESS_PLANNING` | `1` / `0` | `0` |
-| `HARNESS_MAX_TURNS` | turns per prompt | `40` |
+| `AXOLOTL_MODEL` | model id | `deepseek-v4-1-flash` |
+| `AXOLOTL_API_BASE` | OpenAI-compatible endpoint | provider default |
+| `AXOLOTL_API_KEY_ENV` | env var holding the API key | `KENARI_API_KEY` |
+| `AXOLOTL_STRATEGY` | context tier `T0`–`T4` | `T4` |
+| `axolotl_context_WINDOW` | token budget | `128000` |
+| `axolotl_planning` | `1` / `0` | `0` |
+| `AXOLOTL_MAX_TURNS` | turns per prompt | `40` |
 
-`HARNESS_STRATEGY` is the one setting worth exposing in a UI: T4 is the
-paper's best accuracy/cost tier, and a tight `HARNESS_CONTEXT_WINDOW` makes the
+`AXOLOTL_STRATEGY` is the one setting worth exposing in a UI: T4 is the
+paper's best accuracy/cost tier, and a tight `axolotl_context_WINDOW` makes the
 difference measurable rather than theoretical.
 
 ## What the agent advertises
@@ -82,8 +82,8 @@ Tool `kind` is mapped from the harness's own tool names: `read_file` → `read`,
 
 Following Kerenzikov's own "Adding a provider" checklist:
 
-1. `ProviderKind` variant with `id: "harness"`, display name, and command
-   `harness-acp`.
+1. `ProviderKind` variant with `id: "axolotl"`, display name, and command
+   `axolotl-acp`.
 2. `ProviderResumeCursor` variant carrying `session_id`. The harness holds
    sessions in memory for the process lifetime, so a resume after the process
    exits starts a new session — the cursor is honest about that rather than
@@ -95,7 +95,7 @@ Following Kerenzikov's own "Adding a provider" checklist:
    keyed off `stopReason`.
 5. Access modes: the harness has no permission channel yet, so it maps like Amp
    and Pi — Full access only, with the client deciding the posture at launch.
-6. `#[ignore]`d integration test driving a real turn: `crates/harness-acp/tests/stdio.rs`.
+6. `#[ignore]`d integration test driving a real turn: `crates/axolotl-acp/tests/stdio.rs`.
 
 ## Known gaps against Kerenzikov's checklist
 
@@ -111,8 +111,8 @@ absent one:
 - **No rewind or branch.** `session/load` replays; nothing truncates. Kerenzikov's
   `supports_conversation_fork` / `supports_conversation_rollback` should be
   false, which hides those affordances.
-- **No model catalog.** `HARNESS_MODEL` is set at launch; there is no
+- **No model catalog.** `AXOLOTL_MODEL` is set at launch; there is no
   `session/set_model`.
 - **Sessions are in-memory.** `session/resume` works within one process
   lifetime. Persisting them would need a snapshot store — the CLI already has
-  one (`harness sessions`), so wiring it here is a small change.
+  one (`axolotl sessions`), so wiring it here is a small change.

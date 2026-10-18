@@ -1,0 +1,21 @@
+[package]
+name = "axolotl-tui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "axolotl-tui"
+path = "src/main.rs"
+
+[dependencies]
+axolotl-core = { workspace = true }
+axolotl-context = { workspace = true }
+axolotl-actions = { workspace = true }
+axolotl-models = { workspace = true }
+
+ratatui = "0.30"
+crossterm = "0.29"
+tokio = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }

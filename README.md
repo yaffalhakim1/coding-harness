@@ -1,239 +1,165 @@
-# Coding Agent Harness
+# Axolotl
 
-A modular coding agent harness in Rust, built to test the findings of
-["An Empirical Study of Harness Design for Coding Agents"](https://arxiv.org/abs/2609.20804)
-(arXiv:2609.20804) by ablation rather than assertion.
+A lightweight coding agent written in Rust, designed to be driven by
+[Kerenzikov](https://github.com/yaffalhakim1/Kerenzikov-app) over the Agent
+Client Protocol.
 
-## Architecture
-
+```bash
+axolotl run --task "fix the parser" --workspace .
 ```
-harness-cli (binary)
-  └── harness-core (agent loop + state)
-        ├── harness-context (T0–T4 context management)
-        ├── harness-planning (plan generation)
-        ├── harness-actions (tool registry + bash)
-        ├── harness-models (LLM adapters)
-        └── harness-bench (benchmarks, sweeps, analysis)
-```
+
+## Why
+
+OpenCode is a Node process tree. Axolotl is one Rust binary that carries the
+agent loop, the tools, context management and MCP. Kerenzikov launches it the
+same way it launches Copilot, Cursor, Grok or Kimi — over ACP — so a session
+costs one process, not a runtime.
+
+The design is informed by ["An Empirical Study of Harness Design for Coding
+Agents"](https://arxiv.org/abs/2609.20804): context management tiers T0–T4,
+persistent planning, and the predefined-vs-bash action space are all
+implemented and measurable (`axolotl ablate`).
+
+## Crates
 
 | Crate | Responsibility |
 |-------|---------------|
-| `harness-core` | Agent loop, session state, stuck detection, verification, subagents |
-| `harness-context` | Context tiers T0–T4, tokenizer, summarizer, event store wiring |
-| `harness-planning` | Initial plan generation |
-| `harness-actions` | Tools, workspace guard, diagnostics, MCP client, plan/recall tools |
-| `harness-models` | OpenAI-compatible adapters, retry/backoff, failover, mock provider |
-| `harness-bench` | Task loaders, batch runner, sweep reports, trajectory analysis |
-| `harness-tui` | Live terminal view (separate binary) |
-| `harness-acp` | Agent Client Protocol server over stdio — the Kerenzikov integration |
-| `harness-cli` | `run` / `bench` / `ablate` / `analyze` / `sessions` / `resume` / `doctor` |
+| `axolotl-core` | Agent loop, session state, stuck detection, verification, subagents |
+| `axolotl-context` | Context tiers T0–T4, tokenizer, summarizer, recall store |
+| `axolotl-planning` | Initial plan generation |
+| `axolotl-actions` | Tools, workspace guard, permissions, skills, slash commands, MCP |
+| `axolotl-models` | OpenAI-compatible adapters, retry/backoff, failover, mock |
+| `axolotl-bench` | Task loaders, batch runner, sweep reports, trajectory analysis |
+| `axolotl-acp` | ACP v1 server over stdio — the Kerenzikov integration |
+| `axolotl-tui` | Live terminal view |
+| `axolotl-cli` | `run` / `bench` / `ablate` / `analyze` / `sessions` / `resume` / `doctor` |
 
-## Quick Start
-
-```bash
-cargo build
-cargo test
-
-# Check that a config can actually run
-cargo run -- doctor --config config/default.toml --check-api
-
-# Validate configuration without spending tokens
-cargo run -- run --task "explain this repo" --dry-run
-
-# Run one task
-cargo run -- run \
-  --task "Fix the panic in src/parser.rs on empty input" \
-  --config config/default.toml \
-  --workspace . \
-  --context-strategy T4 --context-window 128000 --planning true
-
-# Run a benchmark sweep
-cargo run -- bench --benchmark terminal-bench --tasks bench/tiny-tasks.json --limit 3
-
-# Reproduce the paper's ablations
-cargo run -- ablate --tasks bench/tiny-tasks.json \
-  --config config/bench-tight.toml --windows 1000
-
-# Inspect one trajectory, including failure-stage attribution
-cargo run -- analyze --trajectory trajectories
-```
-
-Exit code is `0` only when the task's verifier commands all pass.
-
-## Context Management
-
-| Tier | Strategy | Notes |
-|------|----------|-------|
-| T0 | No management | Terminates with `context_overflow` when the window is exceeded |
-| T1 | Rule-based elision | Replaces bulky middle-region tool output with stubs |
-| T2 | Elision + recall | Keeps originals; stub offers `recall_event(id)` |
-| T3 | LLM summarization | Folds the oldest middle events into a running summary |
-| **T4** | **Elision → Summarization** | **Best accuracy/cost tradeoff** |
-
-Region model (paper Algorithm 1): the **preamble** (system prompt, task, plan) and
-a **recent window** of at least two turns are never compacted. Only the **middle**
-is elided or summarized. Thresholds come from §3.1: elide at 60% of the window,
-summarize at 85%, keep the last 30% verbatim.
-
-## Planning
-
-With planning enabled the harness generates an initial plan, registers
-`update_plan`, and re-injects the current plan before every turn (paper Figure
-17) so revisions take effect immediately without duplicating history.
-
-## Action Space
-
-`predefined` (read/write/edit/list/glob/grep/bash/web_fetch), `bash-only`, or
-`hybrid`. `update_plan` and `recall_event` are auxiliary and stay available in
-every space, per paper §2.2.
-
-**Parallel reads.** Adjacent read-only tool calls run concurrently, up to eight
-per step (paper §3.1). A mutating call flushes the pending reads first, so a
-`read_file` → `write_file` sequence still observes the read — which is what the
-read-before-write gate depends on.
-
-## Reliability
-
-**Provider failover.** A config may list fallback models:
-
-```toml
-[model]
-model_id = "primary"
-api_key_env = "PRIMARY_API_KEY"
-
-[[model.fallbacks]]
-model_id = "backup"
-api_base = "https://other.example/v1"
-api_key_env = "BACKUP_API_KEY"
-```
-
-Routes are tried in order. Only transport, rate-limit and 5xx errors fail over —
-a bad request or a rejected key is returned immediately, because retrying those
-against another provider just spends money on a request that is wrong either
-way. The answering model is recorded in the response, so a silent failover is
-visible in the trajectory.
-
-## Diagnostics
+## Install
 
 ```bash
-harness doctor --config config/default.toml --check-api
+cargo install --path crates/axolotl-cli
+cargo install --path crates/axolotl-acp
+cargo install --path crates/axolotl-tui
 ```
 
-Checks that the config parses, every credential (primary and fallbacks)
-resolves, the workspace is writable, the tokenizer loads, and the tool set
-resolves for the configured action space. `--check-api` sends one real request.
+`axolotl` lands in `~/.cargo/bin`, already on PATH. See `docs/install.md`.
 
-## Sessions
-
-Every `run` writes two files: a trajectory summary for analysis, and a full
-snapshot that can be resumed.
+## Quick start
 
 ```bash
-harness sessions --dir sessions          # list, newest first
-harness resume --session <id> --dir sessions --config config/default.toml
+# Check the configuration before spending tokens
+axolotl doctor --config config/kenari.toml --check-api
+
+# Run a task
+axolotl run --config config/kenari.toml --task "add a --verbose flag to main"
+
+# Resume the last session
+axolotl sessions
+axolotl resume --session <id>
 ```
 
-Resuming replays the prior conversation into a fresh context window, so the
-model continues from where it stopped rather than restarting. Turn numbering
-restarts and the old outcome is discarded; the plan is carried forward.
+## Interactive features
 
-## MCP servers
+### Permission prompts
 
-Any MCP server's tools become harness tools, named `<server>__<tool>`:
+Every mutating tool asks before it runs. In ACP that is
+`session/request_permission`; the client shows the title, the tool kind, and
+offers allow-once / reject. A denial comes back to the model as a recoverable
+observation, so it can try another approach instead of failing the turn.
 
-```toml
-[[mcp]]
-name = "demo-tools"
-type = "stdio"
-command = "python"
-args = ["mcp/demo_server.py"]
+A destructive-command list (`rm -rf`, `sudo`, `git push`, `git reset --hard`,
+`chmod -R`, …) is refused without waking the user.
+
+### Questions
+
+`ask_user` lets the model ask instead of guessing. Over ACP it routes through
+`elicitation/create`. A dismissed question returns "continue with your best
+judgement" rather than an error, so the turn survives.
+
+### Todo list
+
+`todo` is a structured checklist, distinct from `update_plan`'s free text. It
+is re-injected each turn, and `TodoList::has_unfinished` lets the harness tell
+whether work actually finished.
+
+### Slash commands
+
+Advertised to the client as `available_commands_update` after `session/new`.
+
+| Command | Behaviour |
+|---|---|
+| `/help` | lists commands, no model call |
+| `/skills` | lists workspace skills, no model call |
+| `/plan [what]` | asks for a step-by-step plan |
+| `/review [focus]` | reviews current changes |
+| `/test` | runs tests and reports failures |
+| `/<skill>` | injects that skill's body |
+
+Anything else is an ordinary prompt. A skill shadows a built-in of the same
+name, so a workspace can override `/test` without patching the harness.
+
+### Skills
+
 ```
+.axolotl/skills/<name>/SKILL.md
+.agents/skills/<name>/SKILL.md
+```
+
+```markdown
+---
+name: commit
+description: Write a conventional commit message
+---
+
+Read the staged diff, then write one commit message...
+```
+
+Frontmatter is optional — a body-only file uses its directory name. The body is
+injected only when the skill is invoked, so a repo can carry many skills without
+paying for them in every prompt.
+
+## Context management
+
+| Tier | Strategy |
+|------|----------|
+| T0 | No management — terminates on overflow |
+| T1 | Rule-based elision |
+| T2 | Elision + recall (`recall_event`) |
+| T3 | LLM summarization |
+| **T4** | **Elision → summarization** (default) |
+
+The preamble (system prompt, task, plan) and the last two turns are never
+compacted; only the middle is. Thresholds are the paper's 0.6 / 0.85 soft and
+hard budgets with a 0.3 recent window.
+
+## ACP
 
 ```bash
-harness run --config config/mcp-demo.toml --task "..."
+AXOLOTL_MODEL=deepseek-v4-1-flash \
+AXOLOTL_API_BASE=https://kenari.id/v1 \
+AXOLOTL_API_KEY_ENV=KENARI_API_KEY \
+axolotl-acp --stdio
 ```
 
-A server that fails to connect is logged and skipped, so one broken server does
-not stop the run.
-
-## Subagents
-
-Opt-in via `subagents = true`. The agent gains a `task` tool that delegates a
-bounded job to a child run with its own context window; only the child's final
-answer comes back. Recursion is capped at two levels.
-
-Off by default on purpose: subagents change the action space, and a sweep must
-not silently measure a different harness than the one it claims to.
-
-## TUI
-
-```bash
-cargo run -p harness-tui -- --task "fix the parser" --workspace .
-cargo run -p harness-tui -- --task "..." --headless   # transcript, no terminal
-```
-
-The TUI is a viewer: it consumes progress events and renders them, so it cannot
-affect a run. `--headless` prints the same transcript, which makes it usable in
-CI.
+Implements `initialize`, `session/new|load|resume|close|list|prompt|cancel`,
+plus `session/request_permission` and `elicitation/create` calls back to the
+client. See `docs/acp.md`.
 
 ## Configuration
 
-`config/default.toml` (OpenAI), `config/kenari.toml` (Kenari gateway), and
-`config/bench-tight.toml` (tight-budget ablation).
+`config/default.toml` (OpenAI), `config/kenari.toml` (Kenari gateway),
+`config/bench-tight.toml` (tight-budget ablation), `config/mcp-demo.toml`,
+`config/subagent-demo.toml`.
 
-### Credentials
+Credentials resolve from the environment, then from
+`~/.local/share/opencode/auth.json`. `--dry-run` reports which source was used.
 
-Keys resolve in this order:
+## Validation
 
-1. The environment variable named by `model.api_key_env`
-2. `~/.local/share/opencode/auth.json`, when a matching `api` entry exists
-
-`--dry-run` prints which source was used. No key needs to appear in a config file.
-
-### Environment Variables
-
-- `OPENAI_API_KEY`, `KENARI_API_KEY` — provider keys
-- `RUST_LOG` — log filter (e.g. `info`, `debug`, `harness_core=trace`)
-
-Cost reporting requires `input_cost_per_mtok` and `output_cost_per_mtok`. Without
-both, cost is reported as unknown rather than guessed.
-
-## Trajectory Output
-
-Every session writes `trajectories/<session_id>.json`: config, plan, per-turn
-tokens, tool calls and results, peak context, summarization count, outcome, and
-cost when prices are configured.
-
-## Validation Status
-
-- 299 offline tests, including a scripted end-to-end agent loop.
-- Live end-to-end test against a real model:
-  `cargo test -p harness-core --test live_e2e -- --ignored --nocapture`
-- Ablations reproduce the paper's four claims in direction — see `task.md` for
-  the measured tables and `docs/replication.md` for how to re-run them.
-
-## ACP (Kerenzikov integration)
-
-`harness-acp` speaks Agent Client Protocol v1 over stdio, so a native client
-like [Kerenzikov](https://github.com/yaffalhakim1/Kerenzikov-app) can launch it
-as a provider alongside Copilot, Cursor, Grok and Kimi.
-
-```bash
-HARNESS_MODEL=deepseek-v4-1-flash \
-HARNESS_API_BASE=https://kenari.id/v1 \
-HARNESS_API_KEY_ENV=KENARI_API_KEY \
-HARNESS_STRATEGY=T4 \
-harness-acp --stdio
-```
-
-The agent advertises `loadSession`, `session/resume`, `session/close` and
-`embeddedContext`, and streams `agent_message_chunk`, `tool_call`,
-`tool_call_update`, `usage_update` and `plan` updates. Image and audio are
-advertised as unsupported rather than accepted and degraded.
-
-See `docs/acp.md` for the method table, the update mapping, and the gaps against
-a full provider integration — chiefly that there is no
-`session/request_permission` yet, so a client cannot gate a `bash` call.
+- 496 tests, clippy and fmt clean
+- Live end-to-end against a real model: file-edit task, ACP prompt turn,
+  permission-gated write
+- Ablations reproduce the paper's findings in direction — see `task.md`
 
 ## Development
 

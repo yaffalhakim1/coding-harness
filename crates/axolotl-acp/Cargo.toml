@@ -1,0 +1,27 @@
+[package]
+name = "axolotl-acp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "axolotl-acp"
+path = "src/main.rs"
+
+[dependencies]
+axolotl-core = { workspace = true }
+axolotl-context = { workspace = true }
+axolotl-actions = { workspace = true }
+axolotl-models = { workspace = true }
+
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+uuid = { workspace = true }
+async-trait = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

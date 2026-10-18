@@ -1,21 +1,21 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/harness-core",
-    "crates/harness-context",
-    "crates/harness-planning",
-    "crates/harness-actions",
-    "crates/harness-models",
-    "crates/harness-bench",
-    "crates/harness-tui",
-    "crates/harness-acp",
-    "crates/harness-cli",
+    "crates/axolotl-core",
+    "crates/axolotl-context",
+    "crates/axolotl-planning",
+    "crates/axolotl-actions",
+    "crates/axolotl-models",
+    "crates/axolotl-bench",
+    "crates/axolotl-tui",
+    "crates/axolotl-acp",
+    "crates/axolotl-cli",
 ]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-authors = ["You"]
+authors = ["yaffalhakim1"]
 license = "MIT"
 rust-version = "1.75"
 
@@ -58,12 +58,12 @@ rand = "0.8"
 globset = "0.4"
 
 # Workspace crates
-harness-core = { path = "crates/harness-core" }
-harness-context = { path = "crates/harness-context" }
-harness-planning = { path = "crates/harness-planning" }
-harness-actions = { path = "crates/harness-actions" }
-harness-models = { path = "crates/harness-models" }
-harness-bench = { path = "crates/harness-bench" }
+axolotl-core = { path = "crates/axolotl-core" }
+axolotl-context = { path = "crates/axolotl-context" }
+axolotl-planning = { path = "crates/axolotl-planning" }
+axolotl-actions = { path = "crates/axolotl-actions" }
+axolotl-models = { path = "crates/axolotl-models" }
+axolotl-bench = { path = "crates/axolotl-bench" }
 
 [profile.release]
 opt-level = 3

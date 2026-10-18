@@ -1,7 +1,7 @@
-# Implementation Plan: Coding Agent Harness in Rust
+# Implementation Plan: Axolotl in Rust
 
 **Based on:** "An Empirical Study of Harness Design for Coding Agents" (arXiv:2609.20804)
-**Target:** Modular, benchmark-aware coding agent harness
+**Target:** Modular, benchmark-aware Axolotl
 **Language:** Rust (2021 edition, MSRV 1.75)
 
 > **Phase 1 status:** see `task.md` for the live checklist. Section 0 below
@@ -11,17 +11,17 @@
 
 ## 0. Scaffolding review (Phase 1 entry)
 
-The skeleton compiles up to `harness-actions` but diverges from both this plan
+The skeleton compiles up to `axolotl-actions` but diverges from both this plan
 and the paper. Ordered by cost of leaving it alone:
 
 ### 0.1 Build
-`harness-actions/src/{registry,bash,file_ops,search}.rs` import
-`harness_models::types::*` while `crates/harness-actions/Cargo.toml` never
+`axolotl-actions/src/{registry,bash,file_ops,search}.rs` import
+`axolotl_models::types::*` while `crates/axolotl-actions/Cargo.toml` never
 declares the dependency. Four `E0433`s.
 
 ### 0.2 Cost bugs (spend real money on every turn)
-- `harness-core/src/agent.rs::generate_plan` is dead code duplicated from
-  `harness-planning`; `harness-core` lists `harness-planning` in `Cargo.toml`
+- `axolotl-core/src/agent.rs::generate_plan` is dead code duplicated from
+  `axolotl-planning`; `axolotl-core` lists `axolotl-planning` in `Cargo.toml`
   but never uses it. Two planners, one dead.
 - The planner path passes an empty tool slice to `chat.completions`, which
   several OpenAI-compatible servers reject with 400.
@@ -36,7 +36,7 @@ declares the dependency. Four `E0433`s.
   disables context management; trajectories that outgrow the window terminate
   with an error." The baseline is the denominator of every context finding;
   getting it wrong inverts the paper.
-- `harness-context` never protects the preamble and never budgets the recent
+- `axolotl-context` never protects the preamble and never budgets the recent
   window (Algorithm 1 line 5). It elides the system prompt as readily as a
   stale `ls`.
 
@@ -75,12 +75,12 @@ output, and the CLI are named in the docs but not implemented.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    harness-cli (binary)                      │
+│                    axolotl-cli (binary)                      │
 │  CLI entrypoint: run tasks, benchmarks, analyze trajectories │
 └──────────────┬──────────────────────────────────────────────┘
                │
     ┌──────────▼──────────┐
-    │   harness-core      │  Agent loop, state machine, traits
+    │   axolotl-core      │  Agent loop, state machine, traits
     │  (orchestrator)     │
     └────┬─────┬─────┬────┘
          │     │     │
@@ -90,11 +90,11 @@ output, and the CLI are named in the docs but not implemented.
    └───┬───┘ └──┬──┘ └────┬─────┘
        │        │          │
    ┌───▼────────▼──────────▼───┐
-   │      harness-models       │  LLM provider adapters
+   │      axolotl-models       │  LLM provider adapters
    └─────────────┬─────────────┘
                  │
    ┌─────────────▼─────────────┐
-   │     harness-bench         │  SWE-Bench / Terminal-Bench runners
+   │     axolotl-bench         │  SWE-Bench / Terminal-Bench runners
    └───────────────────────────┘
 ```
 
@@ -102,13 +102,13 @@ output, and the CLI are named in the docs but not implemented.
 
 | Crate | Responsibility | Key Traits |
 |-------|---------------|------------|
-| `harness-core` | Execution loop, agent state, message passing | `Agent`, `Session`, `Turn` |
-| `harness-context` | Context window management, token counting, elision, summarization | `ContextStrategy` (T0–T4), `Summarizer` |
-| `harness-planning` | Plan generation, step decomposition | `PlanningStrategy` |
-| `harness-actions` | Tool registry, bash executor, predefined tools | `Action`, `ActionRegistry`, `Executor` |
-| `harness-models` | LLM API adapters (OpenAI, Anthropic, local) | `LLMProvider`, `ChatMessage` |
-| `harness-bench` | Benchmark task loading, evaluation, scoring | `Benchmark`, `Task`, `Evaluator` |
-| `harness-cli` | Binary entrypoint, config loading, trajectory export | — |
+| `axolotl-core` | Execution loop, agent state, message passing | `Agent`, `Session`, `Turn` |
+| `axolotl-context` | Context window management, token counting, elision, summarization | `ContextStrategy` (T0–T4), `Summarizer` |
+| `axolotl-planning` | Plan generation, step decomposition | `PlanningStrategy` |
+| `axolotl-actions` | Tool registry, bash executor, predefined tools | `Action`, `ActionRegistry`, `Executor` |
+| `axolotl-models` | LLM API adapters (OpenAI, Anthropic, local) | `LLMProvider`, `ChatMessage` |
+| `axolotl-bench` | Benchmark task loading, evaluation, scoring | `Benchmark`, `Task`, `Evaluator` |
+| `axolotl-cli` | Binary entrypoint, config loading, trajectory export | — |
 
 ---
 
@@ -205,10 +205,10 @@ struct SessionConfig {
 **Goal:** Core types, LLM adapter, basic agent loop
 
 - [ ] Define core types: `ChatMessage`, `Turn`, `Session`, `TokenUsage`
-- [ ] Implement `harness-models`: OpenAI-compatible adapter (covers OpenAI, Anthropic via proxy, local models)
-- [ ] Implement `harness-core`: basic agent loop (send → receive → execute tool → repeat)
-- [ ] Implement `harness-actions`: bash executor + file read/write tools
-- [ ] Implement `harness-cli`: run a single task from CLI
+- [ ] Implement `axolotl-models`: OpenAI-compatible adapter (covers OpenAI, Anthropic via proxy, local models)
+- [ ] Implement `axolotl-core`: basic agent loop (send → receive → execute tool → repeat)
+- [ ] Implement `axolotl-actions`: bash executor + file read/write tools
+- [ ] Implement `axolotl-cli`: run a single task from CLI
 - [ ] End-to-end test: solve a simple file-edit task
 
 ### Phase 2: Context Management (Week 3–4)
@@ -263,7 +263,7 @@ struct SessionConfig {
 
 ## 5. Key Implementation Details
 
-### 5.1 Agent Loop (harness-core)
+### 5.1 Agent Loop (axolotl-core)
 
 ```rust
 pub async fn run_agent_loop(
@@ -372,7 +372,7 @@ Every session writes to `trajectories/<session_id>.json`:
 | Risk | Mitigation |
 |------|------------|
 | **Tokenizer mismatch** | Use `tiktoken-rs` for OpenAI models; for Anthropic, use their published tokenizer or approximate with cl100k_base |
-| **LLM API rate limits** | Implement exponential backoff with jitter in `harness-models` |
+| **LLM API rate limits** | Implement exponential backoff with jitter in `axolotl-models` |
 | **Context overflow crashes** | Always check token count before sending; graceful degradation to T0 if management fails |
 | **Benchmark setup complexity** | Use Docker containers for SWE-Bench; start with a small subset (10 tasks) |
 | **Async debugging pain** | Use `tracing` crate with structured spans for every turn and tool call |
@@ -402,14 +402,14 @@ Every session writes to `trajectories/<session_id>.json`:
 ## 8. File Structure
 
 ```
-coding-harness/
+axolotl/
 ├── Cargo.toml                    # Workspace root
 ├── implementation_plan.md        # THIS FILE
 ├── README.md
 ├── config/
 │   └── default.toml              # Default session config
 ├── crates/
-│   ├── harness-core/             # Agent loop + state
+│   ├── axolotl-core/             # Agent loop + state
 │   │   ├── Cargo.toml
 │   │   └── src/
 │   │       ├── lib.rs
@@ -417,7 +417,7 @@ coding-harness/
 │   │       ├── session.rs        # Session state
 │   │       ├── turn.rs           # Turn recording
 │   │       └── types.rs          # Core types
-│   ├── harness-context/          # Context management
+│   ├── axolotl-context/          # Context management
 │   │   ├── Cargo.toml
 │   │   └── src/
 │   │       ├── lib.rs
@@ -428,13 +428,13 @@ coding-harness/
 │   │       ├── t3.rs             # Summarization only
 │   │       ├── t4.rs             # Elision → Summarization
 │   │       └── tokenizer.rs      # Token counting
-│   ├── harness-planning/         # Planning module
+│   ├── axolotl-planning/         # Planning module
 │   │   ├── Cargo.toml
 │   │   └── src/
 │   │       ├── lib.rs
 │   │       ├── strategy.rs       # PlanningStrategy trait
 │   │       └── default.rs        # Default LLM-based planner
-│   ├── harness-actions/          # Tool registry
+│   ├── axolotl-actions/          # Tool registry
 │   │   ├── Cargo.toml
 │   │   └── src/
 │   │       ├── lib.rs
@@ -442,21 +442,21 @@ coding-harness/
 │   │       ├── bash.rs           # Bash executor
 │   │       ├── file_ops.rs       # read/write/edit file tools
 │   │       └── search.rs         # Code search tools
-│   ├── harness-models/           # LLM adapters
+│   ├── axolotl-models/           # LLM adapters
 │   │   ├── Cargo.toml
 │   │   └── src/
 │   │       ├── lib.rs
 │   │       ├── provider.rs       # LLMProvider trait
 │   │       ├── openai.rs         # OpenAI-compatible adapter
 │   │       └── types.rs          # ChatMessage, LLMResponse
-│   ├── harness-bench/            # Benchmark runners
+│   ├── axolotl-bench/            # Benchmark runners
 │   │   ├── Cargo.toml
 │   │   └── src/
 │   │       ├── lib.rs
 │   │       ├── swe_bench.rs      # SWE-Bench loader/evaluator
 │   │       ├── terminal_bench.rs # Terminal-Bench loader/evaluator
 │   │       └── task.rs           # Task trait
-│   └── harness-cli/              # CLI binary
+│   └── axolotl-cli/              # CLI binary
 │       ├── Cargo.toml
 │       └── src/
 │           └── main.rs           # CLI entrypoint

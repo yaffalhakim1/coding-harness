@@ -7,11 +7,11 @@ This directory holds the scripts and fixtures used to reproduce the results in
 
 | Paper claim | How it is measured | Command |
 |---|---|---|
-| Context management prevents overflow, most valuable at tight budgets | T0 vs T1–T4 pass rate and overflow count across window sizes | `harness ablate` |
-| T4 (elision → summarization) is the most efficient tier | Summarization-call count and total tokens per tier | `harness ablate` |
-| Planning saves cost for capable models | T4 with `--planning true` vs `false` | `harness ablate` |
-| bash-only lowers cost for bash-capable models | T4 predefined vs `bash-only` | `harness ablate` |
-| Failure stages differ by capability | `harness analyze` per trajectory | `harness analyze` |
+| Context management prevents overflow, most valuable at tight budgets | T0 vs T1–T4 pass rate and overflow count across window sizes | `axolotl ablate` |
+| T4 (elision → summarization) is the most efficient tier | Summarization-call count and total tokens per tier | `axolotl ablate` |
+| Planning saves cost for capable models | T4 with `--planning true` vs `false` | `axolotl ablate` |
+| bash-only lowers cost for bash-capable models | T4 predefined vs `bash-only` | `axolotl ablate` |
+| Failure stages differ by capability | `axolotl analyze` per trajectory | `axolotl analyze` |
 
 ## Quick run (tight budget)
 

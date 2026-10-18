@@ -1,0 +1,32 @@
+[package]
+name = "axolotl-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "axolotl"
+path = "src/main.rs"
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[dependencies]
+axolotl-core = { workspace = true }
+axolotl-context = { workspace = true }
+axolotl-planning = { workspace = true }
+axolotl-actions = { workspace = true }
+axolotl-models = { workspace = true }
+axolotl-bench = { workspace = true }
+
+tokio = { workspace = true }
+clap = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-appender = { workspace = true }
+anyhow = { workspace = true }
+uuid = { workspace = true }

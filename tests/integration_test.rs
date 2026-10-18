@@ -1,12 +1,12 @@
 //! Cross-crate integration tests for the individual components.
 //!
-//! The full agent loop is covered in `crates/harness-core/tests/agent_loop.rs`;
+//! The full agent loop is covered in `crates/axolotl-core/tests/agent_loop.rs`;
 //! this file checks that the pieces compose as documented.
 
-use harness_context::strategy::{ContextState, ContextStrategy, ContextTier};
-use harness_context::t0::T0Strategy;
-use harness_context::t4::T4Strategy;
-use harness_models::types::ChatMessage;
+use axolotl_context::strategy::{ContextState, ContextStrategy, ContextTier};
+use axolotl_context::t0::T0Strategy;
+use axolotl_context::t4::T4Strategy;
+use axolotl_models::types::ChatMessage;
 
 fn rt() -> tokio::runtime::Runtime {
     tokio::runtime::Runtime::new().unwrap()
@@ -76,9 +76,9 @@ fn context_tier_display() {
 
 #[test]
 fn t4_strategy_creation_reports_its_tier() {
-    use harness_context::summarizer::{Summarizer, SUMMARY_SYSTEM_PROMPT};
-    use harness_context::{ContextEntry, Thresholds};
-    use harness_context::tokenizer::Tokenizer;
+    use axolotl_context::summarizer::{Summarizer, SUMMARY_SYSTEM_PROMPT};
+    use axolotl_context::{ContextEntry, Thresholds};
+    use axolotl_context::tokenizer::Tokenizer;
     use std::sync::Arc;
 
     struct Noop;
@@ -88,7 +88,7 @@ fn t4_strategy_creation_reports_its_tier() {
             &self,
             _previous: Option<&str>,
             _events: &[ContextEntry],
-        ) -> Result<String, harness_context::ContextError> {
+        ) -> Result<String, axolotl_context::ContextError> {
             Ok(String::new())
         }
     }
@@ -108,7 +108,7 @@ fn t4_strategy_creation_reports_its_tier() {
 
 #[test]
 fn thresholds_match_the_paper() {
-    let t = harness_context::Thresholds::default();
+    let t = axolotl_context::Thresholds::default();
     assert!((t.soft_ratio - 0.6).abs() < f32::EPSILON);
     assert!((t.hard_ratio - 0.85).abs() < f32::EPSILON);
     assert!((t.recent_ratio - 0.3).abs() < f32::EPSILON);
@@ -117,7 +117,7 @@ fn thresholds_match_the_paper() {
 
 #[test]
 fn default_config_file_is_valid() {
-    let cfg = harness_core::SessionConfig::default();
+    let cfg = axolotl_core::SessionConfig::default();
     assert_eq!(cfg.context_strategy, ContextTier::T4);
     assert_eq!(cfg.context_window, 128_000);
 }

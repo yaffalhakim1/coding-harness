@@ -1,0 +1,27 @@
+[package]
+name = "axolotl-bench"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+axolotl-core = { workspace = true }
+axolotl-context = { workspace = true }
+axolotl-planning = { workspace = true }
+axolotl-actions = { workspace = true }
+axolotl-models = { workspace = true }
+
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+tempfile = { workspace = true }
+walkdir = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }

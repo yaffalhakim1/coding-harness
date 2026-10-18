@@ -1,4 +1,4 @@
-# Task: Coding Agent Harness — Phases 1–6
+# Task: Axolotl — Phases 1–6
 
 Status: **all six phases complete.**
 Verified against a real model (Kenari / `deepseek-v4-1-flash`).
@@ -17,7 +17,7 @@ Design: `implementation_plan.md`. Behavioural source of truth:
 
 ## Phase 1 — Foundation
 
-### `harness-models`
+### `axolotl-models`
 - [x] OpenAI wire types separate from internal types (stringified tool
       arguments, always-string `content`, `tool_call_id` on tool messages)
 - [x] Typed `ProviderError` with retryable classification
@@ -27,7 +27,7 @@ Design: `implementation_plan.md`. Behavioural source of truth:
 - [x] `MockProvider` for deterministic downstream tests
 - [x] `EventStore` — shared external store for elided content (M2)
 
-### `harness-actions`
+### `axolotl-actions`
 - [x] Workspace guard: rejects `..`, absolute escapes, symlink escapes
 - [x] Read-before-write gate + external-modification detection (SHA-256)
 - [x] `read_file` offset/limit/line numbers; binary and size guards
@@ -37,8 +37,8 @@ Design: `implementation_plan.md`. Behavioural source of truth:
 - [x] Non-zero exit is a typed tool error carrying its output
 - [x] Windows `cmd /C` uses `raw_arg` (plain argv mangles quoted arguments)
 
-### `harness-core`
-- [x] Single planning path through `harness-planning`
+### `axolotl-core`
+- [x] Single planning path through `axolotl-planning`
 - [x] Loop ends when the model takes no action
 - [x] Guard rails: turn limit, wall-clock timeout, session token budget
 - [x] Stuck detection: reminder at 5 identical calls, terminate at 8 failures
@@ -46,7 +46,7 @@ Design: `implementation_plan.md`. Behavioural source of truth:
 - [x] Verification by process exit status; unverifiable tasks report `Unverified`
 - [x] Trajectory JSON with per-turn tokens, tools, durations, peak context
 
-### `harness-cli`
+### `axolotl-cli`
 - [x] `run` / `bench` / `ablate` / `analyze` subcommands
 - [x] `--dry-run` validates config and credentials without spending tokens
 - [x] Credentials resolve from the environment, falling back to OpenCode's
@@ -105,8 +105,8 @@ Design: `implementation_plan.md`. Behavioural source of truth:
 - [x] Failure-stage attribution: file → line → patch → verification (paper §C.1.1)
 - [x] Behaviour encoding: localize / reproduce / fix / verify / other (§C.1.2)
 - [x] Shell commands classified, including redirect-to-file as an edit
-- [x] `harness analyze` reports stage, phases, termination for one trajectory
-- [x] `harness ablate` runs the paper's 12-setting grid and prints a comparison
+- [x] `axolotl analyze` reports stage, phases, termination for one trajectory
+- [x] `axolotl ablate` runs the paper's 12-setting grid and prints a comparison
 - [x] `docs/replication.md` documents the procedure and its caveats
 
 ## Validation
@@ -119,7 +119,7 @@ trip, diagnostics, failure-stage attribution, and sweep aggregation.
 ### Live (real model, real spend)
 - [x] `live_e2e`: creates a file, passes two verifier commands.
       4 turns, ~17k tokens, ~15s.
-- [x] `harness run`: writes a trajectory, reports `unverified` honestly when a
+- [x] `axolotl run`: writes a trajectory, reports `unverified` honestly when a
       task has no test commands.
 - [x] Persistent planning verified live (initial plan → mid-run revisions).
 
@@ -173,7 +173,7 @@ reliability and ergonomics, not the measured behaviour of the harness.
       everything sequentially
 - [x] **Provider failover** — ordered fallback models; only transport, rate-limit
       and 5xx errors switch routes
-- [x] **`harness doctor`** — config, credentials (including fallbacks),
+- [x] **`axolotl doctor`** — config, credentials (including fallbacks),
       workspace, tokenizer, tool set, optional live API check
 - [x] **Credential discovery** — falls back to OpenCode's `auth.json`
 - [x] **Session list + resume** — snapshots persist the full conversation;
@@ -191,7 +191,7 @@ Still deliberately absent:
 
 ## ACP server (the Kerenzikov integration)
 
-- [x] `harness-acp` binary speaking Agent Client Protocol v1 over stdio
+- [x] `axolotl-acp` binary speaking Agent Client Protocol v1 over stdio
 - [x] `initialize` with `loadSession`, `session/resume`, `session/close`,
       `embeddedContext` — every advertised capability has a handler
 - [x] `session/new` / `load` / `resume` / `close` / `list` / `prompt` / `cancel`
